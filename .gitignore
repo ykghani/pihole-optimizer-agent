@@ -35,4 +35,4 @@ build/
 Thumbs.db
 
 #Notes
-*.md
+pihole_mcp_implementation_guide.md
