@@ -69,6 +69,84 @@ This project runs a self-learning AI agent on your Raspberry Pi (or any Linux sy
 | **Cron Job** | Runs analysis automatically every 6 hours |
 | **Email Reporting** | Sends summaries of findings and actions taken |
 
+## 🔒 Security Considerations
+
+**Please read this section carefully before installing.**
+
+### Network Security
+
+The MCP server is configured to bind to `localhost` (127.0.0.1) by default, which means it's only accessible from your Raspberry Pi itself. This is the recommended configuration.
+
+**⚠️ CRITICAL WARNINGS:**
+- **NEVER** change the server host to `0.0.0.0` without implementing authentication
+- Exposing the MCP server to your network allows anyone with network access to:
+  - Read ALL DNS queries from every device on your network
+  - Modify PiHole whitelist/blacklist to disable protection or enable malware domains
+  - Drain your Claude API credits by triggering analysis runs
+  - Enumerate all devices on your network with IP addresses and activity patterns
+
+**For remote access:** Use Tailscale or WireGuard VPN to securely access your Pi from outside your network. Even with VPN, keep the server bound to localhost.
+
+### Privacy Implications
+
+This tool logs and analyzes ALL DNS queries from your network, including:
+- Every website visited by every device
+- Timestamps of access
+- Which device (by IP address) accessed what domains
+- Patterns revealing sleep schedules, work hours, interests, and behavior
+
+**Recommendations:**
+- Understand that this data is stored in plaintext in `~/pihole-agent/logs/`
+- Review file permissions on your Raspberry Pi
+- Never share log files publicly when asking for help (redact domains/IPs)
+- Consider implementing log retention policies (auto-delete after 30 days)
+- Only share your Raspberry Pi access with trusted individuals
+
+### API Key Security
+
+Your Anthropic API key is stored in the `.env` file and has billing implications:
+
+**Best Practices:**
+- ✅ The `.env` file is in `.gitignore` - **never commit it to git**
+- ✅ Monitor your Anthropic API usage at https://console.anthropic.com/
+- ✅ Set up billing alerts to detect unexpected usage
+- ✅ If you fork this repo, verify `.env` is in your fork's `.gitignore`
+- ❌ **NEVER** share your `ANTHROPIC_API_KEY` with anyone
+- ❌ **NEVER** post your `.env` file contents when asking for help
+
+If you suspect your API key has been compromised:
+1. Immediately revoke it at https://console.anthropic.com/settings/keys
+2. Generate a new key
+3. Update your `.env` file
+4. Review your Anthropic billing for unexpected usage
+
+### Getting Help Safely
+
+When asking for help on Reddit, GitHub, or Discord:
+
+**✅ Safe to share:**
+- Sanitized log excerpts (with domains and IPs redacted)
+- Error messages from the terminal
+- Your configuration (without API keys)
+- Screenshots of issues (blur any sensitive domains)
+
+**❌ NEVER share:**
+- Your `.env` file or its contents
+- Your `ANTHROPIC_API_KEY`
+- Raw log files (contain your browsing history)
+- SSH/remote access to your Raspberry Pi
+- Full DNS query logs
+
+**⚠️ Be wary of:**
+- People DMing you offering "quick help" (use public forums)
+- Requests to "just share your .env so I can compare"
+- Helpful strangers offering to SSH in to debug
+- Forks of this repo from unknown authors (verify the code)
+
+Report suspicious activity to moderators.
+
+---
+
 ## Prerequisites
 
 ### System Requirements
@@ -306,12 +384,24 @@ model="claude-sonnet-4-20250514"
 
 ### Remote Access via Tailscale
 
-If you have [Tailscale](https://tailscale.com/) set up, you can access the MCP server from anywhere:
+If you have [Tailscale](https://tailscale.com/) set up, you can securely access the MCP server from anywhere while keeping it bound to localhost:
 
 ```bash
+# On your Raspberry Pi, the server binds to 127.0.0.1 (localhost)
+# But Tailscale creates a secure tunnel
+
 # From your laptop/phone (via Tailscale)
-curl http://100.x.x.x:8765/mcp  # Use your Pi's Tailscale IP
+# SSH into your Pi first, then access locally:
+ssh pi@100.x.x.x  # Your Pi's Tailscale IP
+curl http://127.0.0.1:8765/mcp
+
+# Or use SSH port forwarding:
+ssh -L 8765:127.0.0.1:8765 pi@100.x.x.x
+# Then access on your laptop:
+curl http://localhost:8765/mcp
 ```
+
+**Security Note:** Even with Tailscale, keep the MCP server bound to `127.0.0.1`. Tailscale provides the secure remote access layer.
 
 ### Claude Desktop Integration
 

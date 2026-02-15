@@ -57,17 +57,22 @@ def run_command(cmd: list[str], timeout: int = 30) -> tuple[str, str, int]:
 def get_recent_queries(minutes: int = 60) -> dict:
     """
     Parse PiHole's query log to get recent DNS queries.
-    
+
     The pihole log is at /var/log/pihole/pihole.log and contains lines like:
     Feb 13 10:30:45 dnsmasq[1234]: query[A] google.com from 192.168.1.100
     Feb 13 10:30:45 dnsmasq[1234]: forwarded google.com to 1.1.1.1
     Feb 13 10:30:46 dnsmasq[1234]: /etc/pihole/gravity.db doubleclick.net is 0.0.0.0
-    
+
     Returns:
         Dict with 'queries', 'blocked', 'permitted' lists
     """
     from datetime import datetime, timedelta
-    
+
+    # Input validation: cap at 7 days to prevent memory exhaustion
+    if minutes > 10080:  # 7 days
+        logger.warning(f"Requested {minutes} minutes of data, capping at 10080 (7 days)")
+        minutes = 10080
+
     cutoff_time = datetime.now() - timedelta(minutes=minutes)
     queries = []
     blocked = []

@@ -471,9 +471,15 @@ async def apply_node(state: AgentState) -> AgentState:
 def _send_email_report(report: str):
     """Send report via msmtp."""
     import subprocess
+    import re
 
     if not EMAIL_ADDRESS:
         logger.warning("EMAIL_ADDRESS not set in .env, skipping email report")
+        return
+
+    # Validate email format for security
+    if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', EMAIL_ADDRESS):
+        logger.error(f"Invalid email address format: {EMAIL_ADDRESS}")
         return
 
     email_body = f"""Subject: PiHole Analysis Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}
@@ -554,7 +560,10 @@ async def report_node(state: AgentState) -> AgentState:
     report = "\n".join(report_lines)
 
     # Save report to file
-    report_file = f"/home/pi5/pihole-agent/logs/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    import os
+    log_dir = os.path.expanduser("~/pihole-agent/logs")
+    os.makedirs(log_dir, exist_ok=True)
+    report_file = os.path.join(log_dir, f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md")
     try:
         with open(report_file, 'w') as f:
             f.write(report)

@@ -48,18 +48,13 @@ from tools.pihole_tools import (
 )
 
 # Create the MCP server instance
-# 
+#
 # FastMCP is a high-level wrapper that simplifies MCP server creation.
 # It automatically generates JSON schemas from Python type hints.
 #
-# Configuration:
-# - stateless_http=True: Server doesn't track sessions, more robust for restarts
-# - json_response=True: Returns JSON instead of SSE streams, easier to debug
-mcp = FastMCP(
-    "PiHole Agent",
-    stateless_http=True,
-    json_response=True
-)
+# Note: Configuration is now passed to mcp.run() instead of constructor
+# to avoid deprecation warnings in FastMCP 2.14+
+mcp = FastMCP("PiHole Agent")
 
 
 # ============================================================================
@@ -276,12 +271,20 @@ def main():
     logger.info("  - pihole_gravity_info")
     
     # Run with HTTP transport
-    # host="0.0.0.0" means listen on all network interfaces
-    # This allows connections from Tailscale, local network, etc.
+    # Configuration:
+    # - host="127.0.0.1": Localhost-only for security (NEVER use "0.0.0.0" without auth!)
+    # - stateless_http=True: Server doesn't track sessions, more robust for restarts
+    # - json_response=True: Returns JSON instead of SSE streams, easier to debug
+    # For remote access, use Tailscale/WireGuard VPN (see README)
+    logger.info(f"🔒 Security: Binding to localhost only (127.0.0.1:{port})")
+    logger.info("   For remote access, use SSH port forwarding or Tailscale VPN")
+
     mcp.run(
         transport="streamable-http",
-        host="0.0.0.0",
-        port=port
+        host="127.0.0.1",
+        port=port,
+        stateless_http=True,
+        json_response=True
     )
 
 
