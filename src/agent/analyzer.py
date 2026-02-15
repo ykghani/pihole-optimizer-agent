@@ -205,7 +205,7 @@ async def observe_node(state: AgentState) -> AgentState:
 async def analyze_node(state: AgentState) -> AgentState:
     """
     ANALYZE: Send collected data to Claude for pattern identification.
-    
+
     Claude looks for:
     - Legitimate domains being incorrectly blocked
     - Tracking/telemetry domains not in blocklists
@@ -213,9 +213,28 @@ async def analyze_node(state: AgentState) -> AgentState:
     - Unusual client behavior
     """
     logger.info("=== ANALYZE: Sending data to Claude ===")
-    
+
+    # Check if there's enough meaningful data to analyze
+    # Skip analysis if data is trivial (not worth the API call)
+    total_queries = state['recent_queries'].get('total_queries', 0)
+    blocked_count = len(state.get('top_blocked', []))
+    permitted_count = len(state.get('top_permitted', []))
+
+    # Thresholds: need at least 50 queries OR 5 blocked/permitted domains
+    MIN_QUERIES = 50
+    MIN_DOMAINS = 5
+
+    if total_queries < MIN_QUERIES and blocked_count < MIN_DOMAINS and permitted_count < MIN_DOMAINS:
+        logger.info(f"Insufficient data to analyze - skipping Claude API call "
+                   f"({total_queries} queries, {blocked_count} blocked, {permitted_count} permitted)")
+        return {
+            **state,
+            "analysis": f"Insufficient data to analyze ({total_queries} queries, {blocked_count} blocked domains, {permitted_count} permitted domains). Waiting for more activity.",
+            "recommendations": []
+        }
+
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
-    
+
     # Prepare the analysis prompt
     analysis_prompt = f"""You are a network security analyst reviewing DNS query logs from a home PiHole installation.
 
@@ -449,12 +468,44 @@ async def apply_node(state: AgentState) -> AgentState:
     }
 
 
+def _send_email_report(report: str):
+    """Send report via msmtp."""
+    import subprocess
+
+    if not EMAIL_ADDRESS:
+        logger.warning("EMAIL_ADDRESS not set in .env, skipping email report")
+        return
+
+    email_body = f"""Subject: PiHole Analysis Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}
+To: {EMAIL_ADDRESS}
+From: pihole-agent@juicypi5u.local
+Content-Type: text/plain; charset=utf-8
+
+{report}
+"""
+
+    try:
+        proc = subprocess.run(
+            ['msmtp', '-a', 'default', EMAIL_ADDRESS],
+            input=email_body,
+            text=True,
+            capture_output=True,
+            timeout=30
+        )
+        if proc.returncode == 0:
+            logger.info(f"Email report sent successfully to {EMAIL_ADDRESS}")
+        else:
+            logger.error(f"Failed to send email: {proc.stderr}")
+    except Exception as e:
+        logger.error(f"Email error: {e}")
+
+
 async def report_node(state: AgentState) -> AgentState:
     """
     REPORT: Generate and send summary report.
     """
     logger.info("=== REPORT: Generating summary ===")
-    
+
     # Build report
     report_lines = [
         "# PiHole Analysis Report",
@@ -470,7 +521,7 @@ async def report_node(state: AgentState) -> AgentState:
         "",
         "## Actions Taken",
     ]
-    
+
     actions = state.get('actions_taken', [])
     if actions:
         for action in actions:
@@ -480,10 +531,10 @@ async def report_node(state: AgentState) -> AgentState:
             )
     else:
         report_lines.append("- No automatic actions taken")
-    
+
     report_lines.append("")
     report_lines.append("## Recommendations Needing Review")
-    
+
     auto_count = state.get('auto_apply_count', 0)
     pending = state.get('recommendations', [])[auto_count:]
     if pending:
@@ -493,15 +544,15 @@ async def report_node(state: AgentState) -> AgentState:
             )
     else:
         report_lines.append("- None")
-    
+
     if state.get('errors'):
         report_lines.append("")
         report_lines.append("## Errors")
         for error in state['errors']:
             report_lines.append(f"- {error}")
-    
+
     report = "\n".join(report_lines)
-    
+
     # Save report to file
     report_file = f"/home/pi5/pihole-agent/logs/report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
     try:
@@ -510,10 +561,10 @@ async def report_node(state: AgentState) -> AgentState:
         logger.info(f"Report saved to {report_file}")
     except Exception as e:
         logger.error(f"Failed to save report: {e}")
-    
+
     # Send email (using msmtp which you already have configured)
     _send_email_report(report)
-    
+
     return {
         **state,
         "report": report
@@ -589,34 +640,3 @@ async def run_analysis():
 
 if __name__ == "__main__":
     asyncio.run(run_analysis())
-
-def _send_email_report(report: str):
-    """Send report via msmtp."""
-    import subprocess
-
-    if not EMAIL_ADDRESS:
-        logger.warning("EMAIL_ADDRESS not set in .env, skipping email report")
-        return
-
-    email_body = f"""Subject: PiHole Analysis Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}
-To: {EMAIL_ADDRESS}
-From: pihole-agent@juicypi5u.local
-Content-Type: text/plain; charset=utf-8
-
-{report}
-"""
-
-    try:
-        proc = subprocess.run(
-            ['msmtp', '-a', 'default', EMAIL_ADDRESS],
-            input=email_body,
-            text=True,
-            capture_output=True,
-            timeout=30
-        )
-        if proc.returncode == 0:
-            logger.info(f"Email report sent successfully to {EMAIL_ADDRESS}")
-        else:
-            logger.error(f"Failed to send email: {proc.stderr}")
-    except Exception as e:
-        logger.error(f"Email error: {e}")
