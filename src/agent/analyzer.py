@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 MCP_SERVER_URL = os.getenv('MCP_SERVER_URL', 'http://localhost:8765')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+EMAIL_ADDRESS = os.getenv('EMAIL_ADDRESS')
 
 # Safety settings
 AUTO_APPLY_WHITELIST = True   # Auto-apply whitelist for known-good patterns
@@ -227,10 +228,10 @@ async def analyze_node(state: AgentState) -> AgentState:
 - PiHole Status: {json.dumps(state['pihole_status'], indent=2)}
 
 ### Top Blocked Domains
-{json.dumps(list(state['top_blocked'].items())[:15], indent=2)}
+{json.dumps(state['top_blocked'][:15], indent=2)}
 
 ### Top Permitted Domains
-{json.dumps(state["top_permitted"][:15], indent=2)}
+{json.dumps(state['top_permitted'][:15], indent=2)}
 
 ### Unique Blocked Domains This Period
 {json.dumps(state['recent_queries'].get('blocked', [])[:20], indent=2)}
@@ -510,8 +511,8 @@ async def report_node(state: AgentState) -> AgentState:
     except Exception as e:
         logger.error(f"Failed to save report: {e}")
     
-    # Optionally send email (using msmtp which you already have configured)
-    # _send_email_report(report)
+    # Send email (using msmtp which you already have configured)
+    _send_email_report(report)
     
     return {
         **state,
@@ -592,25 +593,29 @@ if __name__ == "__main__":
 def _send_email_report(report: str):
     """Send report via msmtp."""
     import subprocess
-    
+
+    if not EMAIL_ADDRESS:
+        logger.warning("EMAIL_ADDRESS not set in .env, skipping email report")
+        return
+
     email_body = f"""Subject: PiHole Analysis Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}
-To: yusuf.k.ghani@gmail.com
+To: {EMAIL_ADDRESS}
 From: pihole-agent@juicypi5u.local
 Content-Type: text/plain; charset=utf-8
 
 {report}
 """
-    
+
     try:
         proc = subprocess.run(
-            ['msmtp', '-a', 'default', 'yusuf.k.ghani@gmail.com'],
+            ['msmtp', '-a', 'default', EMAIL_ADDRESS],
             input=email_body,
             text=True,
             capture_output=True,
             timeout=30
         )
         if proc.returncode == 0:
-            logger.info("Email report sent successfully")
+            logger.info(f"Email report sent successfully to {EMAIL_ADDRESS}")
         else:
             logger.error(f"Failed to send email: {proc.stderr}")
     except Exception as e:
