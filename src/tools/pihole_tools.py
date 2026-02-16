@@ -164,7 +164,14 @@ def get_top_blocked_domains(count: int = 20) -> list[dict]:
         data = json.loads(stdout)
         # The JSON output structure varies by PiHole version
         # Try to extract top blocked domains
-        return data.get('top_blocked', [])[:count]
+        top_blocked = data.get('top_blocked', {})
+        # Pi-hole returns a dict of {domain: count} — convert to list format
+        if isinstance(top_blocked, dict):
+            return [
+                {'domain': domain, 'count': cnt}
+                for domain, cnt in sorted(top_blocked.items(), key=lambda x: x[1], reverse=True)
+            ][:count]
+        return top_blocked[:count]
     except json.JSONDecodeError:
         logger.error(f"Failed to parse pihole output as JSON: {stdout[:200]}")
         return []

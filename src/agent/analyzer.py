@@ -165,21 +165,28 @@ async def observe_node(state: AgentState) -> AgentState:
     
     # Get top blocked
     blocked = await call_mcp_tool("pihole_get_top_blocked", {"count": 30})
-    if "error" in blocked:
+    if isinstance(blocked, dict) and "error" in blocked:
         errors.append(f"Failed to get top blocked: {blocked['error']}")
         blocked = []
-    
+    elif isinstance(blocked, dict):
+        # Pi-hole may return {domain: count} dict — convert to list
+        blocked = [{'domain': d, 'count': c} for d, c in sorted(blocked.items(), key=lambda x: x[1], reverse=True)]
+
     # Get top permitted
     permitted = await call_mcp_tool("pihole_get_top_permitted", {"count": 30})
-    if "error" in permitted:
+    if isinstance(permitted, dict) and "error" in permitted:
         errors.append(f"Failed to get top permitted: {permitted['error']}")
         permitted = []
-    
+    elif isinstance(permitted, dict):
+        permitted = [{'domain': d, 'count': c} for d, c in sorted(permitted.items(), key=lambda x: x[1], reverse=True)]
+
     # Get client activity
     clients = await call_mcp_tool("pihole_get_clients", {"hours": 24})
-    if "error" in clients:
+    if isinstance(clients, dict) and "error" in clients:
         errors.append(f"Failed to get client activity: {clients['error']}")
         clients = []
+    elif isinstance(clients, dict):
+        clients = [{'client': k, 'count': v} for k, v in sorted(clients.items(), key=lambda x: x[1], reverse=True)]
     
     # Get PiHole status
     status = await call_mcp_tool("pihole_status")
