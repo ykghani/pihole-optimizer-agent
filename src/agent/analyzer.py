@@ -168,25 +168,61 @@ async def observe_node(state: AgentState) -> AgentState:
     if isinstance(blocked, dict) and "error" in blocked:
         errors.append(f"Failed to get top blocked: {blocked['error']}")
         blocked = []
-    elif isinstance(blocked, dict):
+    elif isinstance(blocked, dict) and not isinstance(blocked, list):
         # Pi-hole may return {domain: count} dict — convert to list
-        blocked = [{'domain': d, 'count': c} for d, c in sorted(blocked.items(), key=lambda x: x[1], reverse=True)]
+        try:
+            blocked = [
+                {'domain': d, 'count': c}
+                for d, c in blocked.items()
+                if isinstance(c, (int, float))  # Filter out non-numeric values
+            ]
+            blocked.sort(key=lambda x: x['count'], reverse=True)
+        except (AttributeError, TypeError) as e:
+            logger.error(f"Failed to parse top_blocked response: {e}, data: {blocked}")
+            blocked = []
+    elif not isinstance(blocked, list):
+        logger.warning(f"Unexpected top_blocked type: {type(blocked)}, setting to empty list")
+        blocked = []
 
     # Get top permitted
     permitted = await call_mcp_tool("pihole_get_top_permitted", {"count": 30})
     if isinstance(permitted, dict) and "error" in permitted:
         errors.append(f"Failed to get top permitted: {permitted['error']}")
         permitted = []
-    elif isinstance(permitted, dict):
-        permitted = [{'domain': d, 'count': c} for d, c in sorted(permitted.items(), key=lambda x: x[1], reverse=True)]
+    elif isinstance(permitted, dict) and not isinstance(permitted, list):
+        try:
+            permitted = [
+                {'domain': d, 'count': c}
+                for d, c in permitted.items()
+                if isinstance(c, (int, float))
+            ]
+            permitted.sort(key=lambda x: x['count'], reverse=True)
+        except (AttributeError, TypeError) as e:
+            logger.error(f"Failed to parse top_permitted response: {e}, data: {permitted}")
+            permitted = []
+    elif not isinstance(permitted, list):
+        logger.warning(f"Unexpected top_permitted type: {type(permitted)}, setting to empty list")
+        permitted = []
 
     # Get client activity
     clients = await call_mcp_tool("pihole_get_clients", {"hours": 24})
     if isinstance(clients, dict) and "error" in clients:
         errors.append(f"Failed to get client activity: {clients['error']}")
         clients = []
-    elif isinstance(clients, dict):
-        clients = [{'client': k, 'count': v} for k, v in sorted(clients.items(), key=lambda x: x[1], reverse=True)]
+    elif isinstance(clients, dict) and not isinstance(clients, list):
+        try:
+            clients = [
+                {'client': k, 'count': v}
+                for k, v in clients.items()
+                if isinstance(v, (int, float))
+            ]
+            clients.sort(key=lambda x: x['count'], reverse=True)
+        except (AttributeError, TypeError) as e:
+            logger.error(f"Failed to parse clients response: {e}, data: {clients}")
+            clients = []
+    elif not isinstance(clients, list):
+        logger.warning(f"Unexpected clients type: {type(clients)}, setting to empty list")
+        clients = []
     
     # Get PiHole status
     status = await call_mcp_tool("pihole_status")
