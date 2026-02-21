@@ -303,33 +303,40 @@ async def analyze_node(state: AgentState) -> AgentState:
 
 ## Your Task
 
-Analyze this DNS data and identify:
+Analyze this DNS data and provide:
 
-1. **False Positives (Whitelist Candidates)**
-   - Legitimate services being blocked (CDNs, APIs, auth services)
-   - Look for patterns like: blocked domain that's a subdomain of a common service
-   
-2. **Tracking/Telemetry to Block (Blacklist Candidates)**  
-   - Domains that look like trackers but aren't in blocklists
-   - Suspicious patterns: random subdomains, known tracking patterns
-   
-3. **Security Concerns**
-   - Unusual domain patterns (potential DGA - Domain Generation Algorithm)
-   - Excessive queries from single client (compromised device?)
-   - Known malware domains or C2 patterns
+1. A detailed written analysis covering:
+   - **False Positives (Whitelist Candidates)**: Legitimate services being blocked
+   - **Tracking/Telemetry to Block**: Domains that should be blacklisted
+   - **Security Concerns**: Unusual patterns, potential threats
+   - **Observations**: General network health and anomalies
 
-4. **Observations**
-   - General network health
-   - IoT devices phoning home
-   - Any anomalies worth noting
+2. After your analysis, provide a JSON block with specific recommendations in this EXACT format:
 
-Provide your analysis in a structured format, then list specific recommendations.
-For each recommendation, include:
-- action: "whitelist" or "blacklist"  
-- domain: the exact domain
-- reason: why you're recommending this
-- risk_level: "low", "medium", or "high"
-- confidence: your confidence level (0-100)
+```json
+{{
+  "recommendations": [
+    {{
+      "action": "whitelist",
+      "domain": "example.com",
+      "reason": "Brief explanation why",
+      "risk_level": "low",
+      "confidence": 95
+    }}
+  ]
+}}
+```
+
+**Risk Level Guidelines:**
+- "low": Very confident this is legitimate/malicious, minimal chance of breaking functionality
+- "medium": Likely correct but some uncertainty
+- "high": Uncertain, needs human review
+
+**Confidence Guidelines:**
+- 90-100: Very confident based on clear evidence (known service, obvious tracker pattern)
+- 80-89: Confident but some ambiguity
+- 70-79: Moderately confident
+- Below 70: Low confidence, definitely needs review
 
 Only recommend changes you're confident about. It's better to miss something than to break legitimate functionality.
 """
@@ -367,37 +374,48 @@ Only recommend changes you're confident about. It's better to miss something tha
 def _parse_recommendations(analysis_text: str) -> list:
     """
     Parse recommendations from Claude's analysis.
-    
-    This is a simple parser - in production you'd use Claude's
-    tool_use feature for structured output.
+
+    Looks for JSON block in the analysis with structured recommendations.
+    Falls back to simple pattern matching if JSON not found.
     """
     recommendations = []
-    
-    # Simple pattern matching for recommendations
-    # Look for lines like: "whitelist: cdn.example.com (reason: CDN for legitimate service)"
+
+    # Try to extract JSON block first
     import re
-    
-    # Pattern for structured recommendations
+    json_pattern = r'```json\s*(\{.*?\})\s*```'
+    json_match = re.search(json_pattern, analysis_text, re.DOTALL | re.IGNORECASE)
+
+    if json_match:
+        try:
+            json_data = json.loads(json_match.group(1))
+            if 'recommendations' in json_data and isinstance(json_data['recommendations'], list):
+                logger.info(f"Parsed {len(json_data['recommendations'])} recommendations from JSON")
+                return json_data['recommendations']
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse JSON recommendations: {e}")
+
+    # Fallback: Simple pattern matching for recommendations
+    # Look for lines like: "whitelist: cdn.example.com (reason: CDN for legitimate service)"
     patterns = [
         r'(?:recommend\s+)?(?P<action>whitelist|blacklist)(?:ing)?[:\s]+(?P<domain>[\w\.\-]+)',
         r'- action:\s*(?P<action>\w+).*?domain:\s*(?P<domain>[\w\.\-]+)',
     ]
-    
+
     for pattern in patterns:
         matches = re.finditer(pattern, analysis_text, re.IGNORECASE | re.DOTALL)
         for match in matches:
             action = match.group('action').lower()
             domain = match.group('domain')
-            
+
             if action in ['whitelist', 'blacklist'] and '.' in domain:
                 recommendations.append({
                     'action': action,
                     'domain': domain,
                     'reason': 'Identified by Claude analysis',
-                    'risk_level': 'medium',  # Default, would be parsed in production
+                    'risk_level': 'medium',  # Default since we couldn't parse structured data
                     'confidence': 70
                 })
-    
+
     # Deduplicate
     seen = set()
     unique_recs = []
@@ -406,7 +424,8 @@ def _parse_recommendations(analysis_text: str) -> list:
         if key not in seen:
             seen.add(key)
             unique_recs.append(rec)
-    
+
+    logger.info(f"Parsed {len(unique_recs)} recommendations using fallback pattern matching")
     return unique_recs
 
 
@@ -566,7 +585,7 @@ async def report_node(state: AgentState) -> AgentState:
         f"- Permitted: {state['recent_queries'].get('total_permitted', 'N/A')}",
         "",
         "## Analysis",
-        state.get('analysis', 'No analysis available')[:1000] + "...",
+        state.get('analysis', 'No analysis available'),
         "",
         "## Actions Taken",
     ]
