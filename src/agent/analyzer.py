@@ -15,11 +15,14 @@ while keeping humans in the loop for high-risk changes.
 import os
 import sys
 import json
+import hmac
+import hashlib
 import httpx
 import asyncio
 from datetime import datetime
 from typing import TypedDict, Annotated, Literal
 from dataclasses import dataclass
+from urllib.parse import quote
 import logging
 
 from dotenv import load_dotenv
@@ -43,6 +46,8 @@ logger = logging.getLogger(__name__)
 MCP_SERVER_URL = os.getenv('MCP_SERVER_URL', 'http://localhost:8765')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 EMAIL_ADDRESS = os.getenv('EMAIL_ADDRESS')
+APPROVAL_SECRET = os.getenv('APPROVAL_SECRET', '')
+APPROVAL_BASE_URL = os.getenv('APPROVAL_BASE_URL', MCP_SERVER_URL)
 
 # Safety settings
 AUTO_APPLY_WHITELIST = True   # Auto-apply whitelist for known-good patterns
@@ -287,6 +292,7 @@ async def analyze_node(state: AgentState) -> AgentState:
 - Total queries: {state['recent_queries'].get('total_queries', 'N/A')}
 - Blocked queries: {state['recent_queries'].get('total_blocked', 'N/A')}
 - Permitted queries: {state['recent_queries'].get('total_permitted', 'N/A')}
+- Cached queries: {state['recent_queries'].get('total_cached', 'N/A')}
 - PiHole Status: {json.dumps(state['pihole_status'], indent=2)}
 
 ### Top Blocked Domains
@@ -344,11 +350,17 @@ Only recommend changes you're confident about. It's better to miss something tha
     try:
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=2000,
+            max_tokens=3000,
             messages=[{"role": "user", "content": analysis_prompt}]
         )
-        
+
         analysis_text = response.content[0].text
+
+        # Detect truncation and warn
+        if response.stop_reason == "max_tokens":
+            logger.warning("Analysis was truncated due to max_tokens limit")
+            analysis_text += "\n\n*[Analysis truncated — output exceeded max_tokens limit]*"
+
         logger.info("Analysis complete")
         
         # Parse recommendations from the analysis
@@ -530,6 +542,17 @@ async def apply_node(state: AgentState) -> AgentState:
     }
 
 
+def _generate_approval_url(action: str, domain: str, reason: str) -> str:
+    """Generate a signed approval URL for a recommendation."""
+    token = hmac.new(
+        APPROVAL_SECRET.encode(),
+        f"{action}:{domain}".encode(),
+        hashlib.sha256
+    ).hexdigest()
+    encoded_reason = quote(reason)
+    return f"{APPROVAL_BASE_URL}/approve?action={action}&domain={domain}&token={token}&reason={encoded_reason}"
+
+
 def _send_email_report(report: str):
     """Send report via msmtp."""
     import subprocess
@@ -583,6 +606,7 @@ async def report_node(state: AgentState) -> AgentState:
         f"- Queries analyzed: {state['recent_queries'].get('total_queries', 'N/A')}",
         f"- Blocked: {state['recent_queries'].get('total_blocked', 'N/A')}",
         f"- Permitted: {state['recent_queries'].get('total_permitted', 'N/A')}",
+        f"- Cached: {state['recent_queries'].get('total_cached', 'N/A')}",
         "",
         "## Analysis",
         state.get('analysis', 'No analysis available'),
@@ -607,9 +631,11 @@ async def report_node(state: AgentState) -> AgentState:
     pending = state.get('recommendations', [])[auto_count:]
     if pending:
         for rec in pending[:10]:
-            report_lines.append(
-                f"- [{rec['risk_level'].upper()}] {rec['action']} {rec['domain']}: {rec['reason']}"
-            )
+            line = f"- [{rec['risk_level'].upper()}] {rec['action']} {rec['domain']}: {rec['reason']}"
+            if APPROVAL_SECRET:
+                url = _generate_approval_url(rec['action'], rec['domain'], rec['reason'])
+                line += f"\n  Approve: {url}"
+            report_lines.append(line)
     else:
         report_lines.append("- None")
 

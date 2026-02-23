@@ -13,13 +13,18 @@ Key design decisions:
 
 import sys
 import os
+import hmac
+import hashlib
+import json
 import logging
 from typing import Any
+from urllib.parse import parse_qs
 
 # Add parent directory to path so we can import tools
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastmcp import FastMCP
+from starlette.responses import JSONResponse, HTMLResponse
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -248,6 +253,101 @@ async def pihole_gravity_info() -> dict:
     """
     logger.info("Getting gravity info")
     return get_gravity_info()
+
+
+# ============================================================================
+# APPROVAL ENDPOINT - Actionable links from email reports
+# ============================================================================
+
+# Secret key for signing approval tokens (set in .env)
+APPROVAL_SECRET = os.getenv('APPROVAL_SECRET', '')
+
+if not APPROVAL_SECRET:
+    logger.warning("APPROVAL_SECRET not set in .env — approval links will be disabled. "
+                   "Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\"")
+
+
+def generate_approval_token(action: str, domain: str) -> str:
+    """Generate an HMAC token to sign an approval action."""
+    message = f"{action}:{domain}"
+    return hmac.new(
+        APPROVAL_SECRET.encode(),
+        message.encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+
+def verify_approval_token(action: str, domain: str, token: str) -> bool:
+    """Verify that an approval token is valid."""
+    expected = generate_approval_token(action, domain)
+    return hmac.compare_digest(token, expected)
+
+
+@mcp.custom_route("/approve", methods=["GET"])
+async def approve_action(request):
+    """
+    HTTP endpoint for approving recommendations via email links.
+
+    Expected query params: action, domain, token, reason
+    Example: /approve?action=block&domain=tracker.com&token=abc123&reason=Tracking+domain
+    """
+    if not APPROVAL_SECRET:
+        return HTMLResponse(
+            "<h2>Approval links are disabled</h2>"
+            "<p>Set APPROVAL_SECRET in your .env file to enable this feature.</p>",
+            status_code=503
+        )
+
+    params = parse_qs(request.url.query)
+    action = params.get("action", [None])[0]
+    domain = params.get("domain", [None])[0]
+    token = params.get("token", [None])[0]
+    reason = params.get("reason", ["Approved via email link"])[0]
+
+    if not all([action, domain, token]):
+        return HTMLResponse(
+            "<h2>Bad Request</h2><p>Missing required parameters (action, domain, token).</p>",
+            status_code=400
+        )
+
+    if action not in ("block", "blacklist", "whitelist", "allow"):
+        return HTMLResponse(
+            f"<h2>Bad Request</h2><p>Invalid action: {action}. Use block or allow.</p>",
+            status_code=400
+        )
+
+    # Normalize action names
+    normalized_action = "blacklist" if action in ("block", "blacklist") else "whitelist"
+
+    if not verify_approval_token(normalized_action, domain, token):
+        logger.warning(f"Invalid approval token for {normalized_action} {domain}")
+        return HTMLResponse(
+            "<h2>Unauthorized</h2><p>Invalid or expired approval token.</p>",
+            status_code=403
+        )
+
+    # Execute the action
+    if normalized_action == "whitelist":
+        result = whitelist_domain(domain, f"[APPROVED] {reason}")
+    else:
+        result = blacklist_domain(domain, f"[APPROVED] {reason}")
+
+    logger.info(f"Approval executed: {normalized_action} {domain} — success={result.get('success')}")
+
+    success = result.get("success", False)
+    if success:
+        return HTMLResponse(
+            f"<h2>Done</h2>"
+            f"<p><strong>{domain}</strong> has been {'allowed' if normalized_action == 'whitelist' else 'blocked'}.</p>"
+            f"<p>Reason: {reason}</p>"
+        )
+    else:
+        return HTMLResponse(
+            f"<h2>Failed</h2>"
+            f"<p>Could not {normalized_action} <strong>{domain}</strong>.</p>"
+            f"<p>Error: {result.get('message', 'Unknown error')}</p>",
+            status_code=500
+        )
 
 
 # ============================================================================

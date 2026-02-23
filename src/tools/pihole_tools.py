@@ -77,7 +77,8 @@ def get_recent_queries(minutes: int = 60) -> dict:
     queries = []
     blocked = []
     permitted = []
-    
+    cached = []
+
     try:
         # Read the log file directly (faster than pihole -t for historical data)
         with open('/var/log/pihole/pihole.log', 'r') as f:
@@ -90,10 +91,10 @@ def get_recent_queries(minutes: int = 60) -> dict:
                         f"{datetime.now().year} {timestamp_str}",
                         "%Y %b %d %H:%M:%S"
                     )
-                    
+
                     if timestamp < cutoff_time:
                         continue
-                    
+
                     # Parse query lines
                     if 'query[' in line:
                         # Extract domain and client
@@ -106,37 +107,45 @@ def get_recent_queries(minutes: int = 60) -> dict:
                                 'domain': domain,
                                 'client': client
                             })
-                    
+
                     # Blocked queries contain "gravity.db" or "is 0.0.0.0"
                     if 'gravity.db' in line or 'is 0.0.0.0' in line:
                         match = re.search(r'(\S+) is 0\.0\.0\.0', line)
                         if match:
                             blocked.append(match.group(1))
-                    
-                    # Forwarded = permitted
-                    if 'forwarded' in line:
+
+                    # Forwarded = permitted (sent to upstream resolver)
+                    elif 'forwarded' in line:
                         match = re.search(r'forwarded (\S+) to', line)
                         if match:
                             permitted.append(match.group(1))
-                            
+
+                    # Cached = answered from local cache (not forwarded upstream)
+                    elif 'cached' in line:
+                        match = re.search(r'cached (\S+) is', line)
+                        if match:
+                            cached.append(match.group(1))
+
                 except (ValueError, AttributeError):
                     continue  # Skip malformed lines
-                    
+
     except FileNotFoundError:
         logger.error("PiHole log file not found at /var/log/pihole/pihole.log")
-        return {'error': 'Log file not found', 'queries': [], 'blocked': [], 'permitted': []}
+        return {'error': 'Log file not found', 'queries': [], 'blocked': [], 'permitted': [], 'cached': []}
     except PermissionError:
         logger.error("Permission denied reading PiHole log - run with appropriate permissions")
-        return {'error': 'Permission denied', 'queries': [], 'blocked': [], 'permitted': []}
-    
+        return {'error': 'Permission denied', 'queries': [], 'blocked': [], 'permitted': [], 'cached': []}
+
     return {
         'time_range_minutes': minutes,
         'total_queries': len(queries),
         'total_blocked': len(blocked),
         'total_permitted': len(permitted),
+        'total_cached': len(cached),
         'queries': queries[-100:],  # Last 100 queries (avoid huge responses)
         'blocked': list(set(blocked))[:50],  # Unique blocked domains
-        'permitted': list(set(permitted))[:50]  # Unique permitted domains
+        'permitted': list(set(permitted))[:50],  # Unique permitted domains
+        'cached': list(set(cached))[:50]  # Unique cached domains
     }
 
 
