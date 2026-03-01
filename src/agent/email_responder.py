@@ -293,62 +293,81 @@ def interpret_command(reply_text):
     """
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
+    # Clean the reply text before sending to Claude
+    # Email replies often contain markdown backticks, angle brackets, extra whitespace,
+    # and other formatting artifacts from email clients that shouldn't affect interpretation
+    cleaned_text = reply_text
+    cleaned_text = cleaned_text.replace('`', '')   # Strip markdown backticks
+    cleaned_text = cleaned_text.replace('<', '')    # Strip angle brackets
+    cleaned_text = cleaned_text.replace('>', '')    # (sometimes used around domains)
+    cleaned_text = cleaned_text.strip()
+
     # System prompt tells Claude exactly what tools are available and what JSON to return
     system_prompt = """You are a PiHole command interpreter. The user has replied to a PiHole Analysis Report email with instructions.
 
-Your job is to determine which MCP tool to call based on their message.
+Your job: determine which MCP tool to call based on their natural language message.
 
-Available tools and when to use them:
+IMPORTANT: The user is writing casual email replies, not structured commands. Their message may contain:
+- Markdown formatting (backticks, bold, etc.) — ignore all formatting, extract the intent
+- Typos or informal phrasing — interpret generously
+- Domain names with or without surrounding punctuation — extract just the clean domain
+- Multiple sentences — focus on the actionable request
+- Conversational tone like "hey can you block..." or "please whitelist..." — these are valid commands
 
-1. pihole_blacklist - Block a domain
+When extracting domain names: strip any backticks, quotes, angle brackets, or other punctuation surrounding them. The domain in the arguments must be clean (e.g., "pixel.springserve.com" not "`pixel.springserve.com`").
+
+Available tools:
+
+1. pihole_blacklist - Block/deny a domain
    Arguments: {"domain": "example.com", "reason": "User requested via email"}
-   Trigger words: block, blacklist, deny, ban, add to blocklist
+   Use when: user wants to block, blacklist, deny, ban, stop, get rid of, or add to blocklist
 
-2. pihole_whitelist - Allow a domain
+2. pihole_whitelist - Allow/unblock a domain
    Arguments: {"domain": "example.com", "reason": "User requested via email"}
-   Trigger words: whitelist, allow, permit, unblock, add to allowlist
+   Use when: user wants to whitelist, allow, permit, unblock, approve, or add to allowlist
 
 3. pihole_get_recent_queries - Show recent DNS queries
    Arguments: {"minutes": 60} (default 60, or extract timeframe from message)
-   Optional: if user mentions a specific client/IP, note it in the reason field
-   Trigger words: show queries, recent queries, what's been queried, DNS activity
+   Use when: user asks about queries, DNS activity, what's been looked up, traffic
 
 4. pihole_status - Get PiHole system status
    Arguments: {} (no arguments needed)
-   Trigger words: status, how is pihole, is pihole running, health check
+   Use when: user asks about status, health, whether pihole is running/working
 
 5. pihole_get_top_blocked - Show most blocked domains
    Arguments: {"count": 20} (default 20, or extract count from message)
-   Trigger words: top blocked, most blocked, what's being blocked
+   Use when: user asks about top/most blocked domains, what's being blocked
 
 6. pihole_get_top_permitted - Show most permitted domains
    Arguments: {"count": 20} (default 20, or extract count from message)
-   Trigger words: top permitted, most allowed, what's being allowed
+   Use when: user asks about top/most permitted or allowed domains
 
 7. pihole_get_clients - Show client device activity
    Arguments: {"hours": 24} (default 24, or extract timeframe from message)
-   Trigger words: clients, devices, who's using, device activity
+   Use when: user asks about clients, devices, who's on the network
 
 Respond with ONLY a JSON object (no markdown, no explanation):
 {
   "tool": "tool_name_here",
   "arguments": {"key": "value"},
-  "summary": "Brief description of what the user wants"
+  "summary": "Brief human-readable description of what will happen"
 }
 
-If the message doesn't match any tool, respond with:
+If you truly cannot determine any intent, respond with:
 {
   "tool": null,
   "arguments": {},
   "summary": "Could not understand the request"
-}"""
+}
+
+Err on the side of action — if the user's intent is even somewhat clear, pick the best matching tool rather than returning null."""
 
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6-20250627",
             max_tokens=500,
             system=system_prompt,
-            messages=[{"role": "user", "content": reply_text}]
+            messages=[{"role": "user", "content": cleaned_text}]
         )
 
         response_text = response.content[0].text.strip()
