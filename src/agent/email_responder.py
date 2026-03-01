@@ -54,12 +54,13 @@ MCP_SERVER_URL = os.getenv('MCP_SERVER_URL', 'http://localhost:8765')
 # Anthropic API key for Claude intent parsing
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 
-# Gmail credentials for IMAP access
-GMAIL_EMAIL = os.getenv('GMAIL_EMAIL')
-GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD')
-
-# Email address to send confirmations to (reuses existing EMAIL_ADDRESS from .env)
+# Email address — single source of truth, used for both IMAP login and sending
+# No need for a separate GMAIL_EMAIL; this is already your Gmail address
 EMAIL_ADDRESS = os.getenv('EMAIL_ADDRESS')
+
+# Gmail app password for IMAP access (the only new .env variable needed)
+# Generate at: https://myaccount.google.com/apppasswords (requires 2FA)
+GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD')
 
 # Gmail IMAP server — standard for all Gmail accounts
 IMAP_HOST = 'imap.gmail.com'
@@ -84,8 +85,8 @@ def connect_to_gmail():
 
     Returns an authenticated IMAPClient instance, or None on failure.
     """
-    if not GMAIL_EMAIL or not GMAIL_APP_PASSWORD:
-        logger.error("GMAIL_EMAIL and GMAIL_APP_PASSWORD must be set in .env")
+    if not EMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        logger.error("EMAIL_ADDRESS and GMAIL_APP_PASSWORD must be set in .env")
         return None
 
     try:
@@ -97,9 +98,9 @@ def connect_to_gmail():
         # Authenticate with the app password
         # Gmail requires an "App Password" when 2FA is enabled —
         # a regular password won't work with IMAP
-        client.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
+        client.login(EMAIL_ADDRESS, GMAIL_APP_PASSWORD)
 
-        logger.info(f"Connected to Gmail IMAP as {GMAIL_EMAIL}")
+        logger.info(f"Connected to Gmail IMAP as {EMAIL_ADDRESS}")
         return client
 
     except imapclient.exceptions.LoginError as e:
