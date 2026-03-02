@@ -48,6 +48,7 @@ ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 EMAIL_ADDRESS = os.getenv('EMAIL_ADDRESS')
 APPROVAL_SECRET = os.getenv('APPROVAL_SECRET', '')
 APPROVAL_BASE_URL = os.getenv('APPROVAL_BASE_URL', MCP_SERVER_URL)
+PIHOLE_AGENT_HOSTNAME = os.getenv('SOC_AGENT_HOSTNAME', 'pihole-agent')
 
 # Safety settings
 AUTO_APPLY_WHITELIST = True   # Auto-apply whitelist for known-good patterns
@@ -569,7 +570,7 @@ def _send_email_report(report: str):
 
     email_body = f"""Subject: PiHole Analysis Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}
 To: {EMAIL_ADDRESS}
-From: pihole-agent@juicypi5u.local
+From: pihole-agent@{PIHOLE_AGENT_HOSTNAME}.local
 Reply-To: {EMAIL_ADDRESS}
 Content-Type: text/plain; charset=utf-8
 

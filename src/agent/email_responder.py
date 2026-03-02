@@ -57,6 +57,7 @@ ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 # Email address — single source of truth, used for both IMAP login and sending
 # No need for a separate GMAIL_EMAIL; this is already your Gmail address
 EMAIL_ADDRESS = os.getenv('EMAIL_ADDRESS')
+PIHOLE_AGENT_HOSTNAME = os.getenv('SOC_AGENT_HOSTNAME', 'pihole-agent')
 
 # Gmail app password for IMAP access (the only new .env variable needed)
 # Generate at: https://myaccount.google.com/apppasswords (requires 2FA)
@@ -486,7 +487,7 @@ def send_confirmation_email(recipient, action_summary, result_data):
 
     email_body = f"""Subject: Re: PiHole Action Confirmation - {timestamp}
 To: {EMAIL_ADDRESS}
-From: pihole-agent@juicypi5u.local
+From: pihole-agent@{PIHOLE_AGENT_HOSTNAME}.local
 Reply-To: {EMAIL_ADDRESS}
 Content-Type: text/plain; charset=utf-8
 
@@ -534,7 +535,7 @@ def send_error_email(error_message):
 
     email_body = f"""Subject: PiHole Responder Error - {timestamp}
 To: {EMAIL_ADDRESS}
-From: pihole-agent@juicypi5u.local
+From: pihole-agent@{PIHOLE_AGENT_HOSTNAME}.local
 Reply-To: {EMAIL_ADDRESS}
 Content-Type: text/plain; charset=utf-8
 

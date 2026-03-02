@@ -1,7 +1,7 @@
 """
-PiHole MCP Server - HTTP Transport
+PiHole & SOC MCP Server - HTTP Transport
 
-This server exposes PiHole operations as MCP tools that can be called
+This server exposes PiHole and SOC operations as MCP tools that can be called
 by any MCP client (Claude Desktop, LangGraph agent, curl, etc.)
 
 Key design decisions:
@@ -9,6 +9,7 @@ Key design decisions:
 - Stateless mode for reliability (no session state to lose on restart)
 - JSON responses for easier debugging
 - All tools are async for better performance under load
+- Global write rate limiter applied to all write operations
 """
 
 import sys
@@ -16,8 +17,10 @@ import os
 import hmac
 import hashlib
 import json
+import time
 import logging
 from typing import Any
+from collections import defaultdict
 from urllib.parse import parse_qs
 
 # Add parent directory to path so we can import tools
@@ -52,6 +55,28 @@ from tools.pihole_tools import (
     get_gravity_info,
 )
 
+# Import SOC tool functions
+from tools.suricata_tools import get_new_alerts, get_alert_count_by_severity
+from tools.ntopng_tools import (
+    get_active_hosts,
+    get_active_flows,
+    get_alerts as ntopng_get_alerts,
+    get_host_data,
+    get_top_talkers,
+    parse_hosts_response,
+    parse_flows_response,
+)
+from tools.enrichment_tools import enrich_ip, enrich_batch
+from tools.firewall_tools import (
+    block_external_ip,
+    unblock_external_ip,
+    rollback_all,
+    get_active_blocks,
+    confirm_block,
+    process_auto_rollbacks,
+)
+from config.protected_entities import is_protected_ip, is_protected_domain
+
 # Create the MCP server instance
 #
 # FastMCP is a high-level wrapper that simplifies MCP server creation.
@@ -59,7 +84,32 @@ from tools.pihole_tools import (
 #
 # Note: Configuration is now passed to mcp.run() instead of constructor
 # to avoid deprecation warnings in FastMCP 2.14+
-mcp = FastMCP("PiHole Agent")
+mcp = FastMCP("PiHole & SOC Agent")
+
+
+# ============================================================================
+# GLOBAL WRITE RATE LIMITER
+# ============================================================================
+# Applies to ALL write operations regardless of which agent calls them.
+# This is the tool-layer safety net that cannot be bypassed by agent logic.
+
+_write_timestamps: dict[str, list[float]] = defaultdict(list)
+WRITE_RATE_LIMIT = 10   # Max writes per minute across all tools
+WRITE_WINDOW = 60       # Seconds
+
+
+def _check_write_rate_limit(tool_name: str) -> bool:
+    """Check if a write operation is within the rate limit. Returns True if allowed."""
+    now = time.time()
+    _write_timestamps[tool_name] = [
+        t for t in _write_timestamps[tool_name] if now - t < WRITE_WINDOW
+    ]
+    total_writes = sum(len(ts) for ts in _write_timestamps.values())
+    if total_writes >= WRITE_RATE_LIMIT:
+        logger.warning(f"Write rate limit hit ({total_writes}/{WRITE_RATE_LIMIT} per {WRITE_WINDOW}s)")
+        return False
+    _write_timestamps[tool_name].append(now)
+    return True
 
 
 # ============================================================================
@@ -137,24 +187,21 @@ async def pihole_get_top_permitted(count: int = 20) -> list[dict]:
 async def pihole_whitelist(domain: str, reason: str) -> dict:
     """
     Add a domain to PiHole's whitelist (allow list).
-    
+
     ⚠️ IMPORTANT: This modifies PiHole configuration. Use with caution.
-    
-    When to whitelist:
-    - Domain is blocked but needed for legitimate functionality
-    - False positive from blocklist (e.g., CDN serving both ads and content)
-    - User explicitly requested access to the domain
-    
+
     Args:
         domain: The domain to whitelist (e.g., "cdn.example.com")
         reason: Why this domain is being whitelisted (REQUIRED for audit)
-    
+
     Returns:
         {success: bool, message: str, reason: str}
     """
     if not reason:
         return {'success': False, 'message': 'Reason is required for audit purposes'}
-    
+    if not _check_write_rate_limit("pihole_whitelist"):
+        return {'success': False, 'message': 'Write rate limit exceeded. Try again in 60 seconds.'}
+
     logger.info(f"Whitelisting domain: {domain} (reason: {reason})")
     return whitelist_domain(domain, reason)
 
@@ -163,24 +210,23 @@ async def pihole_whitelist(domain: str, reason: str) -> dict:
 async def pihole_blacklist(domain: str, reason: str) -> dict:
     """
     Add a domain to PiHole's blacklist (block list).
-    
+
     ⚠️ IMPORTANT: This modifies PiHole configuration. Use with caution.
-    
-    When to blacklist:
-    - Domain is clearly tracking/advertising but not in blocklists
-    - Suspicious domain making unusual requests
-    - Known malware/phishing domain
-    
+
     Args:
         domain: The domain to blacklist (e.g., "tracking.badsite.com")
         reason: Why this domain is being blacklisted (REQUIRED for audit)
-    
+
     Returns:
         {success: bool, message: str, reason: str}
     """
     if not reason:
         return {'success': False, 'message': 'Reason is required for audit purposes'}
-    
+    if is_protected_domain(domain):
+        return {'success': False, 'message': f'Cannot blacklist {domain} — protected entity'}
+    if not _check_write_rate_limit("pihole_blacklist"):
+        return {'success': False, 'message': 'Write rate limit exceeded. Try again in 60 seconds.'}
+
     logger.info(f"Blacklisting domain: {domain} (reason: {reason})")
     return blacklist_domain(domain, reason)
 
@@ -253,6 +299,151 @@ async def pihole_gravity_info() -> dict:
     """
     logger.info("Getting gravity info")
     return get_gravity_info()
+
+
+# ============================================================================
+# SOC TOOLS — Suricata, ntopng, enrichment, firewall
+# ============================================================================
+
+@mcp.tool()
+async def soc_get_suricata_alerts() -> dict:
+    """
+    Get new Suricata IDS alerts since the last check.
+
+    Reads eve.json incrementally using a file-offset bookmark.
+    Only new events since the last cycle are returned.
+
+    Returns:
+        Dictionary with 'alerts', 'dns_events', 'tls_events', 'total_new_lines'
+    """
+    logger.info("Getting new Suricata alerts")
+    return get_new_alerts()
+
+
+@mcp.tool()
+async def soc_get_suricata_summary(hours: int = 24) -> dict:
+    """
+    Get Suricata alert counts by severity for the last N hours.
+
+    Returns:
+        {critical, major, medium, info, total}
+    """
+    logger.info(f"Getting Suricata summary for last {hours} hours")
+    return get_alert_count_by_severity(hours=hours)
+
+
+@mcp.tool()
+async def soc_get_network_hosts() -> dict:
+    """
+    Get all currently active hosts from ntopng.
+
+    Returns host list with IP, MAC, hostname, bytes sent/received.
+    Useful for new-device detection and traffic baseline analysis.
+    """
+    logger.info("Getting active network hosts from ntopng")
+    raw = await get_active_hosts()
+    if "error" in raw:
+        return raw
+    return {"hosts": parse_hosts_response(raw)}
+
+
+@mcp.tool()
+async def soc_get_network_flows() -> dict:
+    """
+    Get currently active network flows from ntopng.
+
+    Each flow shows: client IP, server IP, protocol, ports, bytes transferred.
+    Useful for detecting unusual connections.
+    """
+    logger.info("Getting active network flows from ntopng")
+    raw = await get_active_flows()
+    if "error" in raw:
+        return raw
+    return {"flows": parse_flows_response(raw)}
+
+
+@mcp.tool()
+async def soc_get_ntopng_alerts() -> dict:
+    """Get ntopng alerts."""
+    logger.info("Getting ntopng alerts")
+    return await ntopng_get_alerts()
+
+
+@mcp.tool()
+async def soc_enrich_ip(ip: str) -> dict:
+    """
+    Enrich an external IP with reverse DNS, whois/ASN, and country data.
+
+    Results are cached for 24 hours to avoid redundant lookups.
+
+    Args:
+        ip: The external IP address to enrich
+
+    Returns:
+        {ip, reverse_dns, asn, org, country, enriched_at}
+    """
+    if is_protected_ip(ip):
+        return {"ip": ip, "note": "Protected entity — enrichment skipped"}
+    logger.info(f"Enriching IP: {ip}")
+    return enrich_ip(ip)
+
+
+@mcp.tool()
+async def soc_block_ip(ip: str, reason: str) -> dict:
+    """
+    Block an external IP address (Phase 1: dry-run only).
+
+    ⚠️ Checks protected entities and rate limits before acting.
+    In Phase 1, logs the action but does not execute firewall commands.
+
+    Args:
+        ip: The external IP to block
+        reason: Why this IP is being blocked (REQUIRED for audit)
+
+    Returns:
+        {success, message, action_id, auto_rollback_at, dry_run}
+    """
+    if not reason:
+        return {'success': False, 'message': 'Reason is required for audit purposes'}
+    if is_protected_ip(ip):
+        return {'success': False, 'message': f'Cannot block {ip} — protected entity'}
+    if not _check_write_rate_limit("soc_block_ip"):
+        return {'success': False, 'message': 'Write rate limit exceeded'}
+
+    import uuid
+    action_id = f"block-{uuid.uuid4().hex[:12]}"
+    logger.info(f"Blocking IP: {ip} (reason: {reason})")
+    return block_external_ip(ip=ip, reason=reason, action_id=action_id)
+
+
+@mcp.tool()
+async def soc_unblock_ip(ip: str) -> dict:
+    """
+    Remove a block on an external IP (Phase 1: dry-run only).
+
+    Args:
+        ip: The IP to unblock
+    """
+    logger.info(f"Unblocking IP: {ip}")
+    return unblock_external_ip(ip=ip, action_id="manual")
+
+
+@mcp.tool()
+async def soc_rollback_all(hours: int = 24) -> dict:
+    """
+    Emergency stop: rollback ALL SOC actions from the last N hours.
+
+    Args:
+        hours: How far back to rollback (default: 24 hours)
+    """
+    logger.warning(f"Emergency rollback requested for last {hours} hours")
+    return rollback_all(hours=hours)
+
+
+@mcp.tool()
+async def soc_get_active_blocks() -> list[dict]:
+    """Get all currently active (non-rolled-back) IP blocks."""
+    return get_active_blocks()
 
 
 # ============================================================================
@@ -357,18 +548,17 @@ async def approve_action(request):
 def main():
     """Start the MCP server with HTTP transport."""
     port = int(os.getenv('MCP_SERVER_PORT', 8765))
-    
-    logger.info(f"Starting PiHole MCP Server on port {port}")
-    logger.info("Available tools:")
-    logger.info("  - pihole_get_recent_queries")
-    logger.info("  - pihole_get_top_blocked")
-    logger.info("  - pihole_get_top_permitted")
-    logger.info("  - pihole_whitelist")
-    logger.info("  - pihole_blacklist")
-    logger.info("  - pihole_test_domain")
-    logger.info("  - pihole_get_clients")
-    logger.info("  - pihole_status")
-    logger.info("  - pihole_gravity_info")
+
+    logger.info(f"Starting PiHole & SOC MCP Server on port {port}")
+    logger.info("PiHole tools:")
+    logger.info("  - pihole_get_recent_queries, pihole_get_top_blocked, pihole_get_top_permitted")
+    logger.info("  - pihole_whitelist, pihole_blacklist, pihole_test_domain")
+    logger.info("  - pihole_get_clients, pihole_status, pihole_gravity_info")
+    logger.info("SOC tools:")
+    logger.info("  - soc_get_suricata_alerts, soc_get_suricata_summary")
+    logger.info("  - soc_get_network_hosts, soc_get_network_flows, soc_get_ntopng_alerts")
+    logger.info("  - soc_enrich_ip, soc_block_ip, soc_unblock_ip")
+    logger.info("  - soc_rollback_all, soc_get_active_blocks")
     
     # Run with HTTP transport
     # Configuration:

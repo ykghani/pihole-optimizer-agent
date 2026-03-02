@@ -1,0 +1,30 @@
+# SOC Agent Timer
+#
+# Triggers soc-agent.service every 2 minutes.
+# The service runs a single analysis cycle and exits.
+#
+# Install:
+#   sudo cp systemd/soc-agent.timer.example /etc/systemd/system/soc-agent.timer
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now soc-agent.timer
+#
+# Check status:
+#   systemctl list-timers soc-agent.timer
+#   systemctl status soc-agent.timer
+
+[Unit]
+Description=SOC Agent Timer - Triggers security analysis every 2 minutes
+
+[Timer]
+# Run every 2 minutes
+OnBootSec=30
+OnUnitActiveSec=2min
+
+# Randomize start within 10 seconds to avoid thundering herd
+RandomizedDelaySec=10
+
+# Don't run multiple instances simultaneously
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

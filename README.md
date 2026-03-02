@@ -36,27 +36,35 @@ This project runs a self-learning AI agent on your Raspberry Pi (or any Linux sy
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Raspberry Pi / Linux Server                       │
-│                                                                       │
-│  ┌─────────────┐    ┌─────────────────┐    ┌──────────────────┐    │
-│  │   PiHole    │◄───│  MCP Server     │◄───│  LangGraph Agent │    │
-│  │   CLI/API   │    │  (HTTP :8765)   │    │  (Claude API)    │    │
-│  └─────────────┘    └─────────────────┘    └──────────────────┘    │
-│                             │                       │                │
-│                             │                       ▼                │
-│                             │              ┌──────────────────┐     │
-│                             │              │  Cron (6 hours)  │     │
-│                             │              │  + Email Alerts  │     │
-│                             │              └──────────────────┘     │
-└─────────────────────────────┼──────────────────────────────────────┘
-                              │
-          ┌───────────────────┴───────────────────┐
-          ▼                                       ▼
-   ┌─────────────┐                         ┌─────────────┐
-   │ MacBook     │                         │ Claude      │
-   │ (Terminal)  │                         │ Desktop     │
-   └─────────────┘                         └─────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                        Raspberry Pi / Linux Server                        │
+│                                                                            │
+│  ┌─────────────┐   ┌──────────────────┐   ┌────────────────────────┐    │
+│  │   PiHole    │◄──│   MCP Server     │◄──│  PiHole Agent          │    │
+│  │   CLI/API   │   │   (HTTP :8765)   │   │  (LangGraph + Claude)  │    │
+│  └─────────────┘   └──────────────────┘   └────────────────────────┘    │
+│                                                                            │
+│  ┌─────────────┐   ┌──────────────────┐   ┌────────────────────────┐    │
+│  │  Suricata   │   │  ntopng          │   │  SOC Agent             │    │
+│  │  (IDS/IPS)  │──►│  (Flow analysis) │──►│  (LangGraph + Claude)  │    │
+│  └─────────────┘   └──────────────────┘   └───────────┬────────────┘    │
+│                                                         │                  │
+│  ┌─────────────────────────────────────────┐           │                  │
+│  │  Neo4j Knowledge Graph                  │◄──────────┘                  │
+│  │  (Alert history, IP relationships)      │                               │
+│  └─────────────────────────────────────────┘                               │
+│                                                                            │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │  Shared Audit Log  ~/pihole-agent/logs/audit.jsonl               │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────────────┘
+                              │ Email alerts
+                              ▼
+                       ┌─────────────┐
+                       │  Gmail      │
+                       │  (reports + │
+                       │  replies)   │
+                       └─────────────┘
 ```
 
 ### Components
@@ -64,10 +72,14 @@ This project runs a self-learning AI agent on your Raspberry Pi (or any Linux sy
 | Component | Purpose |
 |-----------|---------|
 | **MCP Server** | Exposes PiHole operations as tools via [Model Context Protocol](https://modelcontextprotocol.io) |
-| **LangGraph Agent** | Orchestrates multi-step analysis workflow using Claude AI |
-| **Claude API** | Provides intelligent pattern recognition and recommendations |
-| **Cron Job** | Runs analysis automatically every 6 hours |
-| **Email Reporting** | Sends summaries of findings and actions taken |
+| **PiHole Agent** | LangGraph workflow: observe → analyze → propose → apply → report |
+| **SOC Agent** | LangGraph workflow: collect → dedup → enrich → correlate → classify → act → store |
+| **Claude API** | Intelligent pattern recognition for both agents (heuristics-first, Claude for ambiguous cases) |
+| **Neo4j** | Knowledge graph storing alert history, IP reputation, and device relationships |
+| **Suricata** | Network IDS — feeds alerts into the SOC agent |
+| **ntopng** | Flow-level traffic analysis — feeds host anomaly data into the SOC agent |
+| **Email Responder** | Reads Gmail replies to act on email-based approval/rejection commands |
+| **Cron / Systemd timers** | Schedules both agents automatically |
 
 ## 🔒 Security Considerations
 
@@ -212,20 +224,38 @@ cp .env.example .env
 nano .env
 ```
 
-Update these values in `.env`:
+At minimum, set these values:
 
 ```bash
-# Required: Your Anthropic API key
-ANTHROPIC_API_KEY=sk-ant-api03-...
-
-# Optional: Email for reports
-EMAIL_ADDRESS=your.email@example.com
-
-# Server configuration (defaults are usually fine)
-PIHOLE_HOST=localhost
-MCP_SERVER_PORT=8765
-LOG_LEVEL=INFO
+ANTHROPIC_API_KEY=sk-ant-api03-...          # Required for Claude analysis
+EMAIL_ADDRESS=your.email@example.com         # Gmail address for reports
+GMAIL_APP_PASSWORD=xxxx xxxx xxxx xxxx       # 16-char Gmail app password
+APPROVAL_SECRET=<output of token_hex(32)>    # Sign approval links
+NTOPNG_URL=http://YOUR_PI_IP:3000            # Your Pi's IP
+NTOPNG_PASSWORD=your_ntopng_password
+NEO4J_PASSWORD=your_neo4j_password
+SOC_AGENT_HOSTNAME=my-pi                     # Used in email subjects
 ```
+
+Generate `APPROVAL_SECRET` with:
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
+
+### 4b. Configure Protected Entities
+
+This file is edited directly (not via `.env`) — it defines IPs and subnets the agent can **never** block:
+
+```bash
+nano src/config/protected_entities.py
+```
+
+Update to match your network:
+- `PROTECTED_IPS`: set your router's IP and your Pi's IP
+- `PROTECTED_SUBNETS`: set your LAN subnet (e.g. `192.168.0.0/24`)
+- `PROTECTED_DOMAIN_SUFFIXES`: uncomment and fill in your Tailscale tailnet domain if applicable
+
+See the [Configuration](#configuration) section for details.
 
 ### 5. Test the Installation
 
@@ -277,19 +307,45 @@ uv run python src/agent/analyzer.py
 # 4. Save report to logs/report_TIMESTAMP.md
 ```
 
-### 8. Set Up Automated Scheduling (Optional)
+### 8. Set Up Automated Scheduling
 
-To run analysis automatically every 6 hours:
+**PiHole Agent** — runs every 6 hours via cron:
 
 ```bash
-# Edit your crontab
 crontab -e
-
-# Add this line (adjust paths to match your installation):
-0 */6 * * * cd /home/pi/pihole-optimizer-agent && /home/pi/.local/bin/uv run python src/agent/analyzer.py >> /home/pi/pihole-optimizer-agent/logs/cron.log 2>&1
+# Add (adjust paths to your installation):
+0 */6 * * * cd ~/pihole-optimizer-agent && ~/.local/bin/uv run python src/agent/analyzer.py >> ~/pihole-optimizer-agent/logs/cron.log 2>&1
 ```
 
-This runs the agent at 12am, 6am, 12pm, and 6pm every day.
+**SOC Agent** — runs every 2 minutes via systemd timer (recommended):
+
+```bash
+sudo cp systemd/soc-agent.service.example /etc/systemd/system/soc-agent.service
+sudo cp systemd/soc-agent.timer.example /etc/systemd/system/soc-agent.timer
+
+# Edit both files — replace 'your-username' with your actual username
+sudo nano /etc/systemd/system/soc-agent.service
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now soc-agent.timer
+
+# Verify
+sudo systemctl status soc-agent.timer
+sudo journalctl -u soc-agent.service -f
+```
+
+### 9. Start Neo4j (SOC Agent dependency)
+
+```bash
+# Start the Neo4j container
+docker compose -f neo4j/docker-compose.yml up -d
+
+# Set the password (first run only)
+NEO4J_PASSWORD=your_neo4j_password docker compose -f neo4j/docker-compose.yml up -d
+
+# Verify — browser UI available at http://YOUR_PI_IP:7474
+docker logs neo4j --tail 20
+```
 
 ## Usage
 
@@ -309,9 +365,38 @@ View the latest report:
 cat logs/report_*.md | tail -100
 ```
 
+### SOC Agent
+
+The SOC agent runs on a 2-minute cycle via systemd timer. You can also trigger it manually:
+
+```bash
+uv run python src/agent/soc_agent.py
+```
+
+**Operating modes** (set `SOC_MODE` in `.env`):
+
+| Mode | Behaviour |
+|------|-----------|
+| `shadow` | Observe only — no emails, no actions. Use this first to verify everything works. |
+| `recommend` | Observe + email alerts. No automated actions. |
+| `auto_suppress` | Observe + email + auto-suppress confirmed false positives. |
+| `active` | Phase 2 only — adds external IP blocking via nftables. |
+
+Start in `shadow` mode and promote only after reviewing the audit log and confirming false positive accuracy.
+
+**Check SOC agent health:**
+
+```bash
+# Latest heartbeat
+cat ~/.soc-agent/heartbeat.json | python3 -m json.tool
+
+# Metrics
+cat ~/.soc-agent/metrics.jsonl | tail -5 | python3 -m json.tool
+```
+
 ### View Audit Log
 
-All whitelist/blacklist changes are logged:
+All whitelist/blacklist changes and SOC actions are logged:
 
 ```bash
 # View all actions taken
@@ -354,15 +439,89 @@ curl http://localhost:8765/mcp
 
 ### Environment Variables
 
-All configuration is in `.env`:
+All configuration is in `.env` (copy from `.env.example`). Variables marked **required** must be set before the agent will run.
+
+#### Core
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `ANTHROPIC_API_KEY` | Claude API key | — | **Yes** |
+| `EMAIL_ADDRESS` | Gmail address for sending and receiving reports | — | **Yes** |
+| `GMAIL_APP_PASSWORD` | Gmail app password for IMAP ([generate here](https://myaccount.google.com/apppasswords)) | — | **Yes** |
+| `APPROVAL_SECRET` | Secret for signing approval links (`python3 -c "import secrets; print(secrets.token_hex(32))"`) | — | **Yes** |
+| `PIHOLE_HOST` | PiHole hostname/IP | `localhost` | No |
+| `MCP_SERVER_PORT` | MCP HTTP server port | `8765` | No |
+| `APPROVAL_BASE_URL` | Externally reachable URL for approval links (e.g. Tailscale address) | MCP server URL | No |
+| `LOG_LEVEL` | Logging verbosity | `INFO` | No |
+
+#### SOC Agent
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `SOC_MODE` | Operating mode: `shadow` \| `recommend` \| `auto_suppress` \| `active` | `shadow` | No |
+| `SOC_AGENT_HOSTNAME` | Hostname shown in alert email subjects and `From:` headers | `soc-agent` | No |
+| `SOC_DAILY_API_CAP` | Daily Claude API cost cap in USD — switches to heuristics-only if exceeded | `2.0` | No |
+| `BLOCK_TTL_SECONDS` | Auto-rollback window for blocks (seconds) | `3600` | No |
+
+#### Suricata
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ANTHROPIC_API_KEY` | Your Claude API key (required) | None |
-| `PIHOLE_HOST` | PiHole hostname/IP | `localhost` |
-| `MCP_SERVER_PORT` | HTTP server port | `8765` |
-| `EMAIL_ADDRESS` | Where to send reports | None |
-| `LOG_LEVEL` | Logging verbosity | `INFO` |
+| `SURICATA_EVE_PATH` | Path to Suricata's `eve.json` log | `/var/log/suricata/eve.json` |
+| `SURICATA_FAST_LOG` | Path to Suricata's `fast.log` | `/var/log/suricata/fast.log` |
+
+#### ntopng
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NTOPNG_URL` | ntopng REST API base URL | `http://localhost:3000` |
+| `NTOPNG_USER` | ntopng username | `admin` |
+| `NTOPNG_PASSWORD` | ntopng password | — |
+| `NTOPNG_IFACE` | Interface index to query | `0` |
+
+#### Neo4j
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NEO4J_URI` | Bolt connection URI | `bolt://localhost:7687` |
+| `NEO4J_USER` | Neo4j username | `neo4j` |
+| `NEO4J_PASSWORD` | Neo4j password | — |
+
+#### Enrichment
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ENRICHMENT_MODE` | `external` (whois/rDNS) or `local` (cache only) | `external` |
+| `MAX_ENRICHMENT_PER_RUN` | Max IPs to enrich per SOC cycle | `20` |
+
+### Hardcoded Configuration (edit directly)
+
+One file must be edited by hand — it is intentionally **not** driven by `.env` so the LLM cannot influence its values:
+
+**[`src/config/protected_entities.py`](src/config/protected_entities.py)**
+
+Update these before first run:
+
+```python
+PROTECTED_IPS = frozenset({
+    "192.168.1.1",   # ← your router's actual IP
+    "192.168.1.2",   # ← your Pi's actual IP (the device running this agent)
+    ...
+})
+
+PROTECTED_SUBNETS = (
+    IPv4Network("192.168.1.0/24"),  # ← your LAN subnet
+    ...
+)
+
+PROTECTED_DOMAIN_SUFFIXES = frozenset({
+    ".tailscale.com",
+    ".ts.net",
+    # ".your-tailnet-name.ts.net",  # ← uncomment and fill in if using Tailscale
+})
+```
+
+These IPs and subnets will **never** be blocked by the agent, regardless of what Suricata reports.
 
 ### Customizing Analysis
 
@@ -500,21 +659,40 @@ crontab -l
 pihole-optimizer-agent/
 ├── src/
 │   ├── mcp_server/
-│   │   └── server.py           # MCP HTTP server (exposes PiHole tools)
+│   │   └── server.py               # MCP HTTP server (exposes PiHole tools)
+│   ├── agent/
+│   │   ├── analyzer.py             # PiHole agent (observe→analyze→propose→apply→report)
+│   │   ├── soc_agent.py            # SOC agent (collect→enrich→correlate→classify→act→store)
+│   │   ├── soc_heuristics.py       # Rule-based classifiers (used before calling Claude)
+│   │   ├── soc_safety.py           # Safety checks and mode enforcement
+│   │   └── email_responder.py      # Gmail IMAP reader for email-based approvals
 │   ├── tools/
-│   │   └── pihole_tools.py     # PiHole CLI wrappers
-│   └── agent/
-│       └── analyzer.py         # LangGraph agent (main analysis logic)
+│   │   ├── pihole_tools.py         # PiHole CLI wrappers
+│   │   ├── suricata_tools.py       # Suricata eve.json reader
+│   │   ├── ntopng_tools.py         # ntopng REST API client
+│   │   ├── neo4j_tools.py          # Neo4j read/write helpers
+│   │   ├── enrichment_tools.py     # Whois / rDNS enrichment
+│   │   └── firewall_tools.py       # nftables stubs (Phase 2)
+│   ├── config/
+│   │   ├── protected_entities.py   # ⚠️  Edit directly — IPs/subnets agent can never block
+│   │   └── known_safe.py           # Known-safe IPs and MAC pins
+│   └── models/
+│       ├── alert_types.py          # Alert dataclasses
+│       └── soc_state.py            # LangGraph state schema for SOC agent
+├── neo4j/
+│   ├── docker-compose.yml          # Neo4j container (run on your Pi)
+│   └── seed_schema.cypher          # Initial graph schema / constraints
 ├── systemd/
-│   ├── pihole-mcp.service.example  # Service file for auto-start
-│   └── README.md               # Systemd setup guide
-├── logs/
-│   ├── report_*.md             # Analysis reports
-│   ├── audit.jsonl             # Audit log of all changes
-│   └── cron.log                # Cron execution log
-├── .env.example                # Environment template
-├── pyproject.toml              # Python dependencies
-└── README.md                   # This file
+│   ├── pihole-mcp.service.example  # MCP server systemd service
+│   ├── soc-agent.service.example   # SOC agent systemd service (oneshot)
+│   ├── soc-agent.timer.example     # SOC agent timer (runs every 2 minutes)
+│   └── README.md                   # Systemd setup guide
+├── logs/                           # Created at runtime
+│   ├── report_*.md                 # PiHole analysis reports
+│   └── audit.jsonl                 # Shared audit log (all agent actions)
+├── .env.example                    # Environment variable template
+├── pyproject.toml                  # Python dependencies
+└── README.md                       # This file
 ```
 
 ## How It Works
@@ -598,13 +776,16 @@ MIT License - see LICENSE file
 ## Roadmap
 
 - [x] Core MCP server with PiHole tools
-- [x] LangGraph agent with Claude integration
-- [x] Automated scheduling with cron
+- [x] PiHole LangGraph agent with Claude integration
+- [x] Automated scheduling (cron + systemd timers)
 - [x] Audit logging
-- [ ] Email notifications (partially implemented)
-- [ ] Web dashboard
+- [x] Email reports and reply-based approvals
+- [x] SOC agent (Suricata + ntopng + Neo4j)
+- [x] Heuristics-first classification (Claude only for ambiguous cases)
+- [x] Safety layer with protected entities (hardcoded, LLM-proof)
+- [ ] Phase 2: nftables-based external IP blocking
+- [ ] Web dashboard for reviewing recommendations
 - [ ] Multi-device DNS analysis
-- [ ] Advanced threat detection
 - [ ] Custom blocklist learning
 
 ---

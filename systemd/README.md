@@ -8,7 +8,7 @@ This directory contains systemd service files for running the PiHole MCP server 
 # 1. Copy the example service file
 sudo cp systemd/pihole-mcp.service.example /etc/systemd/system/pihole-mcp.service
 
-# 2. Edit paths if your installation differs from /home/pi5/pihole-agent
+# 2. Edit paths if your installation differs from /home/your-username/pihole-agent
 sudo nano /etc/systemd/system/pihole-mcp.service
 
 # 3. Reload systemd and start the service
@@ -85,7 +85,7 @@ If port 8765 is taken:
 
 ## Environment Variables
 
-The service reads configuration from `/home/pi5/pihole-agent/.env`:
+The service reads configuration from `/home/your-username/pihole-agent/.env`:
 
 ```bash
 # Server configuration

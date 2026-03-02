@@ -1,0 +1,33 @@
+# Neo4j knowledge graph for the SOC agent
+#
+# Start: docker compose -f neo4j/docker-compose.yml up -d
+# Stop:  docker compose -f neo4j/docker-compose.yml down
+# Logs:  docker logs neo4j --tail 20
+# UI:    http://YOUR_PI_IP:7474
+#
+# Data persists in ~/neo4j/data (bind-mounted).
+# Pin the image digest in production — do not rely on :latest.
+
+services:
+  neo4j:
+    image: neo4j:5.17.0
+    container_name: neo4j
+    restart: unless-stopped
+    ports:
+      - "7474:7474"   # HTTP browser UI
+      - "7687:7687"   # Bolt protocol (Python driver)
+    environment:
+      # SECURITY: Set a strong password. Default "neo4j" is not acceptable.
+      # Override via: NEO4J_PASSWORD=xxx docker compose up
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-changeme}
+      # Memory limits (suitable for Pi 5 with 8GB RAM)
+      - NEO4J_server_memory_heap_initial__size=256m
+      - NEO4J_server_memory_heap_max__size=512m
+      - NEO4J_server_memory_pagecache_size=128m
+    volumes:
+      - ~/neo4j/data:/data
+      - ~/neo4j/logs:/logs
+    deploy:
+      resources:
+        limits:
+          memory: 768M

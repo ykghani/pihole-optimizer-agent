@@ -1,0 +1,45 @@
+# SOC Agent Service
+#
+# This service runs a single SOC analysis cycle and exits.
+# It is triggered by soc-agent.timer (every 2 minutes).
+#
+# Install:
+#   sudo cp systemd/soc-agent.service.example /etc/systemd/system/soc-agent.service
+#   sudo cp systemd/soc-agent.timer.example /etc/systemd/system/soc-agent.timer
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now soc-agent.timer
+#
+# Logs:
+#   sudo journalctl -u soc-agent.service -f
+
+[Unit]
+Description=Home SOC Agent - Network Security Monitor
+After=network-online.target pihole-mcp.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=your-username
+Group=your-username
+WorkingDirectory=/home/your-username/pihole-optimizer-agent
+
+# Run the SOC agent cycle
+ExecStart=/home/your-username/.local/bin/uv run python src/agent/soc_agent.py
+
+# Environment
+EnvironmentFile=/home/your-username/pihole-optimizer-agent/.env
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/your-username/.soc-agent /home/your-username/pihole-agent/logs /home/your-username/.cache/uv /home/your-username/pihole-optimizer-agent/.venv
+PrivateTmp=true
+
+# Resource limits (prevent runaway cycles)
+MemoryMax=512M
+CPUQuota=75%
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

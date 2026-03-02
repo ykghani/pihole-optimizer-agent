@@ -13,7 +13,7 @@
 # - Python 3.11+ installed
 # - uv package manager installed (https://github.com/astral-sh/uv)
 # - PiHole running on the same system
-# - The pihole-agent code in /home/pi5/pihole-agent (adjust paths as needed)
+# - The pihole-agent code in /home/your-username/pihole-agent (adjust paths as needed)
 
 [Unit]
 Description=PiHole MCP Server (HTTP Transport)
@@ -25,20 +25,20 @@ Wants=pihole-FTL.service
 Type=simple
 
 # CHANGE THESE: Set to your user/group
-User=pi5
-Group=pi5
+User=your-username
+Group=your-username
 
 # CHANGE THIS: Set to your installation directory
-WorkingDirectory=/home/pi5/pihole-agent
+WorkingDirectory=/home/your-username/pihole-agent
 
 # Environment variables
 # CHANGE THIS: Update HOME to your user's home directory
-Environment=HOME=/home/pi5
-Environment=PATH=/home/pi5/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/your-username
+Environment=PATH=/home/your-username/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 # The command to run the MCP server
 # CHANGE THIS: Update paths if your installation location differs
-ExecStart=/home/pi5/.local/bin/uv run python src/mcp_server/server.py
+ExecStart=/home/your-username/.local/bin/uv run python src/mcp_server/server.py
 
 # Restart policy - automatically restart if it crashes
 Restart=always
@@ -54,7 +54,7 @@ ProtectHome=read-only
 # - data: Where any persistent data is stored (if needed)
 # - .cache/uv: Required for uv package manager to function
 # - .venv: Virtual environment (uv needs to update it)
-ReadWritePaths=/home/pi5/pihole-agent/logs /home/pi5/pihole-agent/data /home/pi5/.cache/uv /home/pi5/pihole-agent/.venv
+ReadWritePaths=/home/your-username/pihole-agent/logs /home/your-username/pihole-agent/data /home/your-username/.cache/uv /home/your-username/pihole-agent/.venv
 
 # Resource limits (optional, adjust as needed)
 MemoryMax=256M
