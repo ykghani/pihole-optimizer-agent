@@ -570,6 +570,7 @@ def _send_email_report(report: str):
     email_body = f"""Subject: PiHole Analysis Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}
 To: {EMAIL_ADDRESS}
 From: pihole-agent@juicypi5u.local
+Reply-To: {EMAIL_ADDRESS}
 Content-Type: text/plain; charset=utf-8
 
 {report}

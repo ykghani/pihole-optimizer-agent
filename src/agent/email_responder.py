@@ -487,6 +487,7 @@ def send_confirmation_email(recipient, action_summary, result_data):
     email_body = f"""Subject: Re: PiHole Action Confirmation - {timestamp}
 To: {EMAIL_ADDRESS}
 From: pihole-agent@juicypi5u.local
+Reply-To: {EMAIL_ADDRESS}
 Content-Type: text/plain; charset=utf-8
 
 PiHole Email Responder - Action Confirmation
@@ -534,6 +535,7 @@ def send_error_email(error_message):
     email_body = f"""Subject: PiHole Responder Error - {timestamp}
 To: {EMAIL_ADDRESS}
 From: pihole-agent@juicypi5u.local
+Reply-To: {EMAIL_ADDRESS}
 Content-Type: text/plain; charset=utf-8
 
 PiHole Email Responder encountered an error:
