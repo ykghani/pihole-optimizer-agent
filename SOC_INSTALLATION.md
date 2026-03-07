@@ -156,12 +156,12 @@ else:
 ### Test 3 — Neo4j
 
 ```bash
-uv run python -c "
-import sys; sys.path.insert(0, 'src')
-from dotenv import load_dotenv; load_dotenv()
-from tools.neo4j_tools import get_neo4j_stats
-print(get_neo4j_stats())
-"
+    uv run python -c "
+    import sys; sys.path.insert(0, 'src')
+    from dotenv import load_dotenv; load_dotenv()
+    from tools.neo4j_tools import get_neo4j_stats
+    print(get_neo4j_stats())
+    "
 ```
 
 **Expected:** JSON with node counts. Warnings about labels not existing (e.g. `Finding`) are normal on a fresh database — they disappear once the agent has run. The `status: ok` field confirms connectivity.
@@ -187,13 +187,22 @@ print('Budget check:', s.check_budget())
 uv run python src/agent/soc_agent.py
 ```
 
-**Expected:** The agent runs one full cycle: collects events, deduplicates, enriches, correlates, classifies (heuristics + Claude for ambiguous), then takes NO action (shadow mode) and writes heartbeat/metrics. Check for tracebacks — warnings are OK, errors need investigation.
+**Expected:** The agent runs one full cycle: collects events, deduplicates, enriches, correlates, classifies (heuristics for clear cases, queues ambiguous for later enrichment), then takes NO action (shadow mode) and writes heartbeat/metrics. Check for tracebacks — warnings are OK, errors need investigation.
 
 ---
 
 ## Part 3 — Install Systemd Services
 
-### SOC Agent Service and Timer
+The SOC agent uses **two timers** with different responsibilities:
+
+| Service | Timer | Frequency | Uses Claude? |
+|---------|-------|-----------|-------------|
+| `soc-agent` | `soc-agent.timer` | Every 2 min | No — heuristics only |
+| `soc-enrich` | `soc-enrich.timer` | Every hour | Yes — classifies queued ambiguous events |
+
+Events that heuristics cannot classify are written to `~/.soc-agent/ambiguous_queue.jsonl` during each 2-minute cycle. The enrichment service drains this queue once per hour and sends all queued events to Claude in a single batched call.
+
+### SOC Agent Service and Timer (2-min heuristic cycle)
 
 ```bash
 sudo cp systemd/soc-agent.service.example /etc/systemd/system/soc-agent.service
@@ -206,23 +215,59 @@ Edit the service file to match your username and paths:
 sudo nano /etc/systemd/system/soc-agent.service
 ```
 
-Lines to update (search for `pi5` and `your-username`):
+Lines to update (replace `your-username` with your actual username):
 ```ini
-User=pi5
-Group=pi5
-WorkingDirectory=/home/pi5/pihole-agent
-ReadWritePaths=/home/pi5/pihole-agent /home/pi5/.soc-agent
+User=your-username
+Group=your-username
+WorkingDirectory=/home/your-username/pihole-optimizer-agent
+EnvironmentFile=/home/your-username/pihole-optimizer-agent/.env
+ExecStart=/home/your-username/.local/bin/uv run python src/agent/soc_agent.py
+ReadWritePaths=/home/your-username/.soc-agent /home/your-username/pihole-agent/logs /home/your-username/.cache/uv /home/your-username/pihole-optimizer-agent/.venv
 ```
 
-Enable and start:
+### SOC Enrichment Service and Timer (hourly Claude cycle)
+
+```bash
+sudo cp systemd/soc-enrich.service.example /etc/systemd/system/soc-enrich.service
+sudo cp systemd/soc-enrich.timer.example /etc/systemd/system/soc-enrich.timer
+```
+
+Edit the enrichment service file with the same path substitutions:
+
+```bash
+sudo nano /etc/systemd/system/soc-enrich.service
+```
+
+### Enable Both Timers
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now soc-agent.timer
+sudo systemctl enable --now soc-agent.timer soc-enrich.timer
 
-# Confirm it fired
-systemctl list-timers soc-agent.timer
-sudo journalctl -u soc-agent.service -f   # watch the first run
+# Confirm both are scheduled
+systemctl list-timers soc-agent.timer soc-enrich.timer
+
+# Watch the 2-minute heuristic cycle
+sudo journalctl -u soc-agent.service -f
+
+# Watch the hourly enrichment cycle (runs ~5 min after boot)
+sudo journalctl -u soc-enrich.service -f
+```
+
+### Verify the Queue is Being Used
+
+After the agent fires once, check that ambiguous events are being queued:
+
+```bash
+# Should show > 0 lines after first 2-min cycle
+wc -l ~/.soc-agent/ambiguous_queue.jsonl
+
+# Force an enrichment run immediately (don't wait an hour)
+sudo systemctl start soc-enrich.service
+sudo journalctl -u soc-enrich.service -f
+
+# Queue should be empty after enrichment
+wc -l ~/.soc-agent/ambiguous_queue.jsonl
 ```
 
 ---
@@ -273,27 +318,31 @@ for line in sys.stdin:
 print(dict(counts))
 "
 
-# How often is Claude being called vs heuristics handling it?
+# How many events were queued for enrichment vs classified by heuristics?
 tail -50 ~/.soc-agent/metrics.jsonl | python3 -c "
 import sys, json
-total_api = 0
-total_heuristic = 0
+total_queued = 0
+total_classified = 0
 for line in sys.stdin:
     try:
         m = json.loads(line)
-        total_api += m.get('api_calls', 0)
-        total_heuristic += m.get('heuristic_classifications', 0)
+        total_queued += m.get('pending_enrichment', 0)
+        total_classified += m.get('classifications', 0)
     except: pass
-total = total_api + total_heuristic
-print(f'Claude: {total_api} ({100*total_api//max(total,1)}%), Heuristics: {total_heuristic} ({100*total_heuristic//max(total,1)}%)')
+total = total_queued + total_classified
+print(f'Queued for Claude: {total_queued} ({100*total_queued//max(total,1)}%), Heuristics: {total_classified - total_queued} ({100*(total_classified-total_queued)//max(total,1)}%)')
 "
+
+# Check enrichment cycle is running successfully
+sudo journalctl -u soc-enrich.service --since "24 hours ago" | grep -E "complete|error|Drained"
 ```
 
 **Healthy baseline targets:**
-- Agent runs successfully every 2 minutes (no gaps >5 min in heartbeat)
+- `soc-agent` runs successfully every 2 minutes (no gaps >5 min in heartbeat)
+- `soc-enrich` runs every hour without errors (`journalctl -u soc-enrich.service`)
 - FP rate on your own device traffic < 10%
 - No `critical` classifications on known-good devices
-- Claude call rate < 30% (heuristics should handle the majority)
+- Enrichment queue is drained each hour (not accumulating unboundedly)
 - Neo4j accumulating data without errors
 
 ### Week 2 — Tune False Positives

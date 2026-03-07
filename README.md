@@ -319,21 +319,31 @@ crontab -e
 0 */6 * * * cd ~/pihole-optimizer-agent && ~/.local/bin/uv run python src/agent/analyzer.py >> ~/pihole-optimizer-agent/logs/cron.log 2>&1
 ```
 
-**SOC Agent** — runs every 2 minutes via systemd timer (recommended):
+**SOC Agent** — two systemd timers working together:
+
+| Timer | Frequency | What it does |
+|-------|-----------|--------------|
+| `soc-agent.timer` | Every 2 min | Heuristic classification, queues ambiguous events |
+| `soc-enrich.timer` | Every hour | Claude classifies the queued ambiguous events |
 
 ```bash
+# Copy all four files
 sudo cp systemd/soc-agent.service.example /etc/systemd/system/soc-agent.service
 sudo cp systemd/soc-agent.timer.example /etc/systemd/system/soc-agent.timer
+sudo cp systemd/soc-enrich.service.example /etc/systemd/system/soc-enrich.service
+sudo cp systemd/soc-enrich.timer.example /etc/systemd/system/soc-enrich.timer
 
-# Edit both files — replace 'your-username' with your actual username
+# Edit both service files — replace 'your-username' with your actual username
 sudo nano /etc/systemd/system/soc-agent.service
+sudo nano /etc/systemd/system/soc-enrich.service
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now soc-agent.timer
+sudo systemctl enable --now soc-agent.timer soc-enrich.timer
 
-# Verify
-sudo systemctl status soc-agent.timer
-sudo journalctl -u soc-agent.service -f
+# Verify both timers
+systemctl list-timers soc-agent.timer soc-enrich.timer
+sudo journalctl -u soc-agent.service -f    # 2-min heuristic cycles
+sudo journalctl -u soc-enrich.service -f   # hourly Claude enrichment
 ```
 
 ### 9. Start Neo4j (SOC Agent dependency)
@@ -628,6 +638,16 @@ Try:
 - Run during high-traffic periods
 - Check that PiHole is logging queries
 
+### WHOIS Enrichment Failures
+
+If you see `Whois lookup failed: [Errno 2] No such file or directory: 'whois'` during SOC agent enrichment, the `whois` CLI is not installed:
+
+```bash
+sudo apt install whois
+```
+
+The agent will continue without WHOIS data and log a warning — it is not a blocking error.
+
 ### Claude API Errors
 
 ```bash
@@ -737,15 +757,18 @@ pihole-optimizer-agent/
 ## Cost Estimate
 
 **Claude API costs** (as of Feb 2026):
-- Model: Claude Sonnet 4.5
-- Per analysis: ~2,000-5,000 tokens
-- Cost: ~$0.01-0.05 per run
-- Running every 6 hours: **~$3-6/month**
 
-Costs scale with:
-- DNS query volume
-- Number of unique domains
-- Analysis time window
+| Agent | Frequency | Tokens/run | Cost/run | Monthly |
+|-------|-----------|-----------|---------|---------|
+| PiHole agent | Every 6h | ~2,000–5,000 | ~$0.01–0.05 | ~$3–6 |
+| SOC enrichment | Every 1h | ~1,000–4,000 | ~$0.005–0.02 | ~$4–15 |
+
+The SOC agent's 2-minute cycle uses **heuristics only** (no Claude calls).
+Claude is called once per hour via the enrichment timer, processing only the
+events that heuristics could not classify. Most cycles produce zero or very
+few ambiguous events, keeping costs low.
+
+Total estimated cost: **~$7–21/month** depending on network activity.
 
 ## Contributing
 

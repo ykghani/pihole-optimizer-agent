@@ -1,13 +1,20 @@
 """
 SOC Agent — LangGraph workflow for automated network security monitoring.
 
-This agent polls Suricata, PiHole, and ntopng on a 2-minute cycle,
-correlates findings across tools, classifies threats (heuristics-first,
-Claude for ambiguous cases), and routes alerts by severity.
+This agent runs in two modes:
 
-Architecture:
-    START → COLLECT → DEDUPLICATE → ENRICH → CORRELATE →
-    CLASSIFY → SAFETY_CHECK → [AUTO_ACT | HOLD] → ROUTE → STORE → END
+1. Normal cycle (every 2 minutes, via soc-agent.timer):
+   START → COLLECT → DEDUPLICATE → ENRICH → CORRELATE →
+   CLASSIFY → SAFETY_CHECK → [AUTO_ACT | HOLD] → ROUTE → STORE → END
+
+   Classification uses heuristics only. Events that heuristics cannot
+   classify are written to ~/.soc-agent/ambiguous_queue.jsonl for later
+   LLM enrichment. This avoids Claude API calls on every 2-min cycle.
+
+2. Enrichment cycle (every hour, via soc-enrich.timer):
+   Invoked with --enrich flag. Drains ambiguous_queue.jsonl, sends all
+   queued findings to Claude in batches of ≤20, emails HIGH/CRITICAL
+   results, and writes to the audit log.
 
 Safety: The agent operates in one of four modes (shadow, recommend,
 auto_suppress, active) controlled by SOC_MODE in .env. Each mode
@@ -451,29 +458,23 @@ async def classify_node(state: SOCState) -> SOCState:
         else:
             needs_claude.append(finding)
 
-    # Claude classification for remaining events
+    # Queue ambiguous events for hourly LLM enrichment (not called here)
     if needs_claude:
-        api_budget = check_api_budget(estimated_tokens=len(needs_claude) * 200)
-        if api_budget["allowed"]:
-            claude_results = await _classify_with_claude(needs_claude[:20])
-            classifications.extend(claude_results)
-        else:
-            logger.warning(f"Skipping Claude: {api_budget['reason']}")
-            # Fallback: classify as MEDIUM for human review
-            for finding in needs_claude:
-                classifications.append({
-                    "finding_id": finding["finding_id"],
-                    "classification": "medium",
-                    "description": "Could not classify (API budget exceeded)",
-                    "recommended_action": "investigate",
-                    "confidence": 50,
-                    "heuristic": "budget_fallback",
-                })
+        _queue_for_enrichment(needs_claude)
+        for finding in needs_claude:
+            classifications.append({
+                "finding_id": finding["finding_id"],
+                "classification": "pending_enrichment",
+                "description": "Queued for hourly LLM enrichment",
+                "recommended_action": "monitor",
+                "confidence": 0,
+                "heuristic": "queued",
+            })
 
     logger.info(
         f"Classified {len(classifications)} findings: "
         f"{len(false_positives)} FPs, "
-        f"{len(needs_claude)} sent to Claude, "
+        f"{len(needs_claude)} queued for enrichment, "
         f"{len(classifications) - len(needs_claude) - len(false_positives)} by heuristic"
     )
 
@@ -957,6 +958,139 @@ async def store_node(state: SOCState) -> SOCState:
 
 
 # ============================================================================
+# AMBIGUOUS EVENT QUEUE
+# ============================================================================
+
+SOC_STATE_DIR = os.path.expanduser("~/.soc-agent")
+AMBIGUOUS_QUEUE_FILE = os.path.join(SOC_STATE_DIR, "ambiguous_queue.jsonl")
+QUEUE_MAX_AGE_HOURS = 2
+
+
+def _queue_for_enrichment(findings: list[dict]) -> None:
+    """Append ambiguous findings to the enrichment queue."""
+    os.makedirs(SOC_STATE_DIR, exist_ok=True)
+    queued_at = datetime.now().isoformat()
+    with open(AMBIGUOUS_QUEUE_FILE, "a") as f:
+        for finding in findings:
+            entry = {**finding, "queued_at": queued_at}
+            f.write(json.dumps(entry) + "\n")
+    logger.info(f"Queued {len(findings)} findings for hourly enrichment")
+
+
+def _drain_enrichment_queue() -> list[dict]:
+    """
+    Read, deduplicate, and clear the enrichment queue.
+
+    Discards entries older than QUEUE_MAX_AGE_HOURS to avoid acting on stale data.
+    Returns deduplicated list of findings, newest entry per finding_id wins.
+    """
+    if not os.path.exists(AMBIGUOUS_QUEUE_FILE):
+        return []
+
+    cutoff = datetime.now().timestamp() - QUEUE_MAX_AGE_HOURS * 3600
+    seen: dict[str, dict] = {}  # finding_id → finding (last write wins)
+    stale_count = 0
+
+    with open(AMBIGUOUS_QUEUE_FILE) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                queued_at_str = entry.get("queued_at", "")
+                queued_ts = datetime.fromisoformat(queued_at_str).timestamp() if queued_at_str else 0
+                if queued_ts < cutoff:
+                    stale_count += 1
+                    continue
+                fid = entry.get("finding_id", "")
+                if fid:
+                    seen[fid] = entry
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+    # Atomically clear the queue
+    open(AMBIGUOUS_QUEUE_FILE, "w").close()
+
+    findings = list(seen.values())
+    logger.info(
+        f"Drained queue: {len(findings)} unique findings "
+        f"({stale_count} stale discarded)"
+    )
+    return findings
+
+
+async def run_enrich_cycle() -> None:
+    """
+    Hourly enrichment cycle: drain the ambiguous queue and classify with Claude.
+
+    For HIGH/CRITICAL results, sends an immediate email alert.
+    Safe to run even if queue is empty.
+    """
+    run_id = f"enrich-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    start_time = datetime.now()
+    logger.info(f"Starting enrichment cycle {run_id}")
+
+    findings = _drain_enrichment_queue()
+    if not findings:
+        logger.info("Enrichment queue empty — nothing to do")
+        return
+
+    # Check API budget before any calls
+    api_budget = check_api_budget(estimated_tokens=len(findings) * 200)
+    if not api_budget["allowed"]:
+        logger.warning(f"Enrichment skipped: {api_budget['reason']}")
+        # Re-queue so findings aren't lost
+        _queue_for_enrichment(findings)
+        return
+
+    # Classify in batches of ≤20
+    all_results: list[dict] = []
+    for i in range(0, len(findings), 20):
+        batch = findings[i:i + 20]
+        results = await _classify_with_claude(batch)
+        all_results.extend(results)
+
+    # Email any HIGH/CRITICAL results
+    soc_mode = SOC_MODE
+    urgent = [r for r in all_results if r.get("classification") in ("critical", "high")]
+    if urgent and soc_mode != "shadow":
+        _send_immediate_alert(urgent, {"run_id": run_id, "soc_mode": soc_mode})
+
+    # Write enrichment results to audit log
+    log_dir = os.path.expanduser("~/pihole-agent/logs")
+    os.makedirs(log_dir, exist_ok=True)
+    audit_file = os.path.join(log_dir, "audit.jsonl")
+    with open(audit_file, "a") as f:
+        for result in all_results:
+            entry = {
+                "timestamp": datetime.now().isoformat(),
+                "source": "soc-enrich",
+                "run_id": run_id,
+                "finding_id": result.get("finding_id", ""),
+                "classification": result.get("classification", ""),
+                "description": result.get("description", ""),
+                "confidence": result.get("confidence", 0),
+            }
+            f.write(json.dumps(entry) + "\n")
+
+    duration = (datetime.now() - start_time).total_seconds()
+    logger.info(
+        f"Enrichment cycle {run_id} complete in {duration:.1f}s: "
+        f"{len(all_results)} classified, {len(urgent)} urgent alerts"
+    )
+
+    write_heartbeat(
+        run_id=run_id,
+        events_processed=len(findings),
+        actions_taken=0,
+        errors=[],
+        sources_available=["enrichment_queue"],
+        run_duration_seconds=duration,
+    )
+
+
+# ============================================================================
 # GRAPH DEFINITION
 # ============================================================================
 
@@ -1060,4 +1194,16 @@ async def run_soc_cycle():
 
 
 if __name__ == "__main__":
-    asyncio.run(run_soc_cycle())
+    import argparse
+    parser = argparse.ArgumentParser(description="SOC Agent")
+    parser.add_argument(
+        "--enrich",
+        action="store_true",
+        help="Run hourly enrichment cycle (drains ambiguous queue, calls Claude)",
+    )
+    args = parser.parse_args()
+
+    if args.enrich:
+        asyncio.run(run_enrich_cycle())
+    else:
+        asyncio.run(run_soc_cycle())

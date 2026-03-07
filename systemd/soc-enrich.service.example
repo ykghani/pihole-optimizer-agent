@@ -1,0 +1,48 @@
+# SOC Enrichment Service
+#
+# Runs the hourly LLM enrichment cycle: drains ~/.soc-agent/ambiguous_queue.jsonl,
+# classifies queued events with Claude, and emails any HIGH/CRITICAL findings.
+#
+# The 2-minute soc-agent.service uses heuristics only and queues ambiguous
+# events here instead of calling Claude on every cycle.
+#
+# Install:
+#   sudo cp systemd/soc-enrich.service.example /etc/systemd/system/soc-enrich.service
+#   sudo cp systemd/soc-enrich.timer.example /etc/systemd/system/soc-enrich.timer
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now soc-enrich.timer
+#
+# Logs:
+#   sudo journalctl -u soc-enrich.service -f
+
+[Unit]
+Description=Home SOC Agent - Hourly LLM Enrichment
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=your-username
+Group=your-username
+WorkingDirectory=/home/your-username/pihole-optimizer-agent
+
+# Run the enrichment cycle (drains ambiguous queue, calls Claude)
+ExecStart=/home/your-username/.local/bin/uv run python src/agent/soc_agent.py --enrich
+
+# Environment
+EnvironmentFile=/home/your-username/pihole-optimizer-agent/.env
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/your-username/.soc-agent /home/your-username/pihole-agent/logs /home/your-username/.cache/uv /home/your-username/pihole-optimizer-agent/.venv
+PrivateTmp=true
+
+# Resource limits — enrichment may process many batches, allow more time
+MemoryMax=512M
+CPUQuota=75%
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
