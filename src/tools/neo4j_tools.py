@@ -396,6 +396,34 @@ def enforce_retention(days: int = 7) -> int:
     return count
 
 
+def get_neo4j_stats() -> dict:
+    """
+    Return basic graph stats (node/relationship counts by label).
+
+    Used for smoke-testing connectivity and for the performance baseline.
+    Returns an error dict if Neo4j is unreachable.
+    """
+    driver = _get_driver()
+    if driver is None:
+        return {"error": "Cannot connect to Neo4j — check NEO4J_PASSWORD and that Docker is running"}
+
+    try:
+        driver.verify_connectivity()
+    except Exception as e:
+        return {"error": f"Neo4j connectivity check failed: {e}"}
+
+    counts = {}
+    for label in ("Device", "Domain", "IP", "Alert", "Finding"):
+        results = _run_query(f"MATCH (n:{label}) RETURN count(n) AS c")
+        counts[label.lower() + "_count"] = results[0]["c"] if results else 0
+
+    rel_results = _run_query("MATCH ()-[r]->() RETURN count(r) AS c")
+    counts["relationship_count"] = rel_results[0]["c"] if rel_results else 0
+    counts["neo4j_uri"] = NEO4J_URI
+    counts["status"] = "ok"
+    return counts
+
+
 def close() -> None:
     """Close the Neo4j driver connection."""
     global _driver

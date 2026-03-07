@@ -176,7 +176,13 @@ def get_new_alerts(
         with open(eve_path, "r") as f:
             f.seek(offset)
 
-            for line in f:
+            # Use readline() instead of iteration so f.tell() works correctly.
+            # Python's for-loop iterator uses read-ahead buffering which disables tell().
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+
                 lines_read += 1
 
                 if lines_read > max_events:

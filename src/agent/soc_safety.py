@@ -396,3 +396,46 @@ def compute_source_hashes(source_files: list[str]) -> dict[str, str]:
         except FileNotFoundError:
             hashes[filepath] = "MISSING"
     return hashes
+
+
+# ---------------------------------------------------------------------------
+# SafetySystem convenience class
+# ---------------------------------------------------------------------------
+
+class SafetySystem:
+    """
+    Thin class wrapper around the module-level safety functions.
+
+    Provides a single object that the agent and smoke tests can instantiate
+    to verify the safety system loads correctly and inspect the current mode.
+    """
+
+    def __init__(self) -> None:
+        self.soc_mode: str = os.getenv("SOC_MODE", "shadow")
+        self.limits: dict = SAFETY_LIMITS
+        self.daily_api_cap: float = DAILY_API_COST_CAP_USD
+        logger.info(f"SafetySystem initialised in mode={self.soc_mode}")
+
+    def check_budget(self, action_type: str = "action") -> dict:
+        return check_budget(action_type)
+
+    def record_action(self, action_type: str, target: str, success: bool) -> None:
+        record_action(action_type, target, success)
+
+    def check_api_budget(self, estimated_tokens: int = 0) -> dict:
+        return check_api_budget(estimated_tokens)
+
+    def record_api_usage(self, tokens: int) -> None:
+        record_api_usage(tokens)
+
+    def validate_action_target(self, action_type: str, target: str) -> dict:
+        return validate_action_target(action_type, target)
+
+    def is_action_allowed(self, action_type: str, classification: str) -> dict:
+        return is_action_allowed_in_mode(self.soc_mode, action_type, classification)
+
+    def write_heartbeat(self, **kwargs) -> None:
+        write_heartbeat(**kwargs)
+
+    def log_metrics(self, metrics: dict) -> None:
+        log_metrics(metrics)
