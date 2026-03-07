@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 NTOPNG_BASE_URL = os.getenv("NTOPNG_URL", "http://localhost:3000")
 NTOPNG_TOKEN = os.getenv("NTOPNG_TOKEN", "")
-NTOPNG_IFACE = os.getenv("NTOPNG_IFACE", "0")  # Default interface index
+NTOPNG_IFACE = os.getenv("NTOPNG_IFACE", "1")  # Default interface index (wlan0 = 1)
 
 # Request timeout (seconds)
 NTOPNG_TIMEOUT = 15
@@ -64,15 +64,27 @@ async def get_active_hosts() -> dict:
     """
     Get all currently active hosts on the network.
 
-    Returns host list with IP, MAC, hostname, bytes sent/received,
-    and anomaly scores. Useful for new-device detection and
-    baseline traffic analysis.
+    Paginates through all pages automatically (ntopng returns 10 per page).
+    Returns a synthetic dict with a flat "data" list of all hosts.
     """
-    result = await _ntopng_get(
-        "/lua/rest/v2/get/host/active.lua",
-        params={"ifid": NTOPNG_IFACE},
-    )
-    return result
+    all_hosts = []
+    page = 1
+    while True:
+        result = await _ntopng_get(
+            "/lua/rest/v2/get/host/active.lua",
+            params={"ifid": NTOPNG_IFACE, "currentPage": page},
+        )
+        if "error" in result:
+            return result
+        rsp = result.get("rsp", {})
+        data = rsp.get("data", [])
+        all_hosts.extend(data)
+        per_page = rsp.get("perPage", 10)
+        # Stop when we've received a partial page
+        if len(data) < per_page:
+            break
+        page += 1
+    return {"rsp": {"data": all_hosts}}
 
 
 async def get_host_data(host_ip: str) -> dict:
@@ -96,12 +108,25 @@ async def get_active_flows() -> dict:
     Each flow shows: client IP, server IP, protocol, ports,
     bytes transferred, and duration. Useful for detecting
     unusual connections (e.g., outbound to unknown IPs at 3am).
+    Paginates through all pages automatically.
     """
-    result = await _ntopng_get(
-        "/lua/rest/v2/get/flow/active.lua",
-        params={"ifid": NTOPNG_IFACE},
-    )
-    return result
+    all_flows = []
+    page = 1
+    while True:
+        result = await _ntopng_get(
+            "/lua/rest/v2/get/flow/active.lua",
+            params={"ifid": NTOPNG_IFACE, "currentPage": page},
+        )
+        if "error" in result:
+            return result
+        rsp = result.get("rsp", {})
+        data = rsp.get("data", [])
+        all_flows.extend(data)
+        per_page = rsp.get("perPage", 10)
+        if len(data) < per_page:
+            break
+        page += 1
+    return {"rsp": {"data": all_flows}}
 
 
 async def get_host_flows(host_ip: str) -> dict:
@@ -172,19 +197,18 @@ def parse_hosts_response(raw: dict) -> list[dict]:
     """
     Parse the ntopng hosts response into a normalized list.
 
-    ntopng API responses vary between versions. This function
-    handles common formats and extracts the fields we need.
+    Handles the v6+ paginated format: {"rsp": {"data": [...], ...}}
     """
     if "error" in raw:
         return []
 
-    # v2 API wraps results in rsp
     rsp = raw.get("rsp", raw)
 
-    if isinstance(rsp, list):
+    # Paginated v6+ format: rsp.data is the list
+    if isinstance(rsp, dict):
+        hosts = rsp.get("data", [])
+    elif isinstance(rsp, list):
         hosts = rsp
-    elif isinstance(rsp, dict):
-        hosts = list(rsp.values()) if rsp else []
     else:
         return []
 
@@ -192,14 +216,16 @@ def parse_hosts_response(raw: dict) -> list[dict]:
     for host in hosts:
         if not isinstance(host, dict):
             continue
+        b = host.get("bytes", {})
+        flows = host.get("num_flows", {})
         parsed.append({
-            "ip": host.get("ip", host.get("column_ip", "")),
+            "ip": host.get("ip", ""),
             "mac": host.get("mac", ""),
-            "name": host.get("name", host.get("column_name", "")),
-            "bytes_sent": host.get("bytes.sent", host.get("column_bytes_sent", 0)),
-            "bytes_recv": host.get("bytes.rcvd", host.get("column_bytes_rcvd", 0)),
-            "num_flows": host.get("active_flows.as_client", 0) + host.get("active_flows.as_server", 0),
-            "is_local": host.get("localhost", host.get("is_local", False)),
+            "name": host.get("name", host.get("ip", "")),
+            "bytes_sent": b.get("sent", 0) if isinstance(b, dict) else 0,
+            "bytes_recv": b.get("recvd", 0) if isinstance(b, dict) else 0,
+            "num_flows": flows.get("total", 0) if isinstance(flows, dict) else 0,
+            "is_local": host.get("is_localhost", False),
         })
 
     return parsed
