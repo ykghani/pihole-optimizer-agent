@@ -16,6 +16,10 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 # Default paths

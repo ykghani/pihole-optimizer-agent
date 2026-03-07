@@ -17,6 +17,10 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 logger = logging.getLogger(__name__)
 
 # Cache file for enrichment results (avoid redundant lookups)

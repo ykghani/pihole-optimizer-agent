@@ -182,6 +182,8 @@ Report suspicious activity to moderators.
 
 ## Installation
 
+> **SOC Agent setup:** If you are setting up the SOC agent (Suricata + ntopng + Neo4j integration), see **[SOC_INSTALLATION.md](SOC_INSTALLATION.md)** for the complete SOC installation guide, smoke tests, baseline methodology, and autonomy escalation playbook. The steps below cover the PiHole agent only.
+
 ### 1. Clone the Repository
 
 ```bash
@@ -771,7 +773,8 @@ MIT License - see LICENSE file
 
 - **Issues**: [GitHub Issues](https://github.com/yourusername/pihole-optimizer-agent/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/yourusername/pihole-optimizer-agent/discussions)
-- **Guide**: See [pihole_mcp_implementation_guide.md](pihole_mcp_implementation_guide.md) for detailed setup
+- **SOC Agent setup**: See [SOC_INSTALLATION.md](SOC_INSTALLATION.md) for the full SOC installation, baseline, and autonomy escalation guide
+- **PiHole MCP guide**: See [pihole_mcp_implementation_guide.md](pihole_mcp_implementation_guide.md) for detailed PiHole setup
 
 ## Roadmap
 
