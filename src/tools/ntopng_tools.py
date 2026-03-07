@@ -5,7 +5,8 @@ ntopng exposes a REST API on port 3000 for querying host-level statistics,
 active flows, and alert history. This module provides typed wrappers
 around those endpoints.
 
-Authentication: Basic auth with username/password from .env.
+Authentication: Token-based auth via Authorization header (.env: NTOPNG_TOKEN).
+Generate a token in ntopng Settings → Preferences → Token-based Authentication.
 """
 
 import os
@@ -21,8 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 NTOPNG_BASE_URL = os.getenv("NTOPNG_URL", "http://localhost:3000")
-NTOPNG_USER = os.getenv("NTOPNG_USER", "admin")
-NTOPNG_PASSWORD = os.getenv("NTOPNG_PASSWORD", "")
+NTOPNG_TOKEN = os.getenv("NTOPNG_TOKEN", "")
 NTOPNG_IFACE = os.getenv("NTOPNG_IFACE", "0")  # Default interface index
 
 # Request timeout (seconds)
@@ -35,15 +35,15 @@ async def _ntopng_get(endpoint: str, params: Optional[dict] = None) -> dict:
 
     Returns the JSON response body, or an error dict on failure.
     """
-    if not NTOPNG_PASSWORD:
-        return {"error": "NTOPNG_PASSWORD not configured in .env"}
+    if not NTOPNG_TOKEN:
+        return {"error": "NTOPNG_TOKEN not configured in .env"}
 
     url = f"{NTOPNG_BASE_URL}{endpoint}"
-    auth = (NTOPNG_USER, NTOPNG_PASSWORD)
+    headers = {"Authorization": f"Token {NTOPNG_TOKEN}"}
 
     try:
         async with httpx.AsyncClient(timeout=NTOPNG_TIMEOUT) as client:
-            response = await client.get(url, params=params, auth=auth)
+            response = await client.get(url, params=params, headers=headers)
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as e:
