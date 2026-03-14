@@ -36,3 +36,7 @@ Thumbs.db
 
 #Notes
 pihole_mcp_implementation_guide.md
+
+#Logs
+*.md
+*.jsonl
