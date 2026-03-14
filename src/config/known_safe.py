@@ -66,6 +66,15 @@ KNOWN_SAFE_DOMAINS: frozenset[str] = frozenset({
     "api.anthropic.com",
     "pypi.org",
     "files.pythonhosted.org",
+    # DNS over HTTPS resolvers (trigger ET INFO sigs, always benign)
+    "dns.google",
+    "cloudflare-dns.com",
+    # VS Code Dev Tunnels (developer tooling)
+    "tunnels.api.visualstudio.com",
+    "rel.tunnels.api.visualstudio.com",
+    "vscode.download.prss.microsoft.com",
+    # Spotify P2P (normal Spotify client behaviour)
+    "spotify.com",
 })
 
 # Domain suffixes that are generally safe (reduce severity but don't auto-dismiss)
@@ -81,6 +90,12 @@ KNOWN_SAFE_SUFFIXES: frozenset[str] = frozenset({
     # Tailscale infrastructure
     ".tailscale.com",
     ".tailscale.io",
+    # Spotify (P2P client traffic is normal)
+    ".spotify.com",
+    ".scdn.co",
+    # VS Code / Microsoft dev tooling
+    ".visualstudio.com",
+    ".vscode-cdn.net",
 })
 
 
