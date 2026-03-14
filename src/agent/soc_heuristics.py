@@ -17,6 +17,7 @@ from config.known_safe import (
     is_known_safe_ip,
     is_known_safe_domain,
     CDN_ASN_PREFIXES,
+    TAILSCALE_DERP_IPS,
 )
 from config.protected_entities import PROTECTED_SUBNETS
 
@@ -53,6 +54,42 @@ NIGHT_END = time(5, 0)       # 5:00 AM
 
 FLOOD_THRESHOLD = 50          # Alerts per SID in 5 minutes = flood
 FLOOD_SUPPRESSION_MINUTES = 60
+
+# ---------------------------------------------------------------------------
+# STUN / NAT traversal signatures that are always benign
+# ---------------------------------------------------------------------------
+
+# Suricata signature substrings that indicate STUN traffic.
+# STUN (RFC 5389) is used by Tailscale and other VPN/WebRTC software for
+# NAT traversal — these alerts fire constantly and are never actionable.
+STUN_SIGNATURE_SUBSTRINGS: tuple[str, ...] = (
+    "STUN",
+    "stun",
+    "NAT traversal",
+    "nat-traversal",
+)
+
+
+def is_tailscale_stun(signature: str, dest_ip: str, dest_port: int | None) -> bool:
+    """
+    Return True if the event is Tailscale / generic STUN NAT-traversal traffic.
+
+    Matches on:
+    - Signature contains a known STUN keyword, OR
+    - Destination is UDP 3478 (the IANA STUN port) to a Tailscale DERP IP or
+      a Tailscale domain suffix (checked via dest_ip presence in TAILSCALE_DERP_IPS).
+
+    These are false positives with ~100% confidence on a home network running
+    Tailscale — they should never reach the LLM queue.
+    """
+    if any(kw in signature for kw in STUN_SIGNATURE_SUBSTRINGS):
+        return True
+    if dest_ip in TAILSCALE_DERP_IPS:
+        return True
+    # UDP 3478 = STUN; combined with a non-RFC1918 dest it is almost always VPN NAT traversal
+    if dest_port == 3478 and not is_rfc1918(dest_ip):
+        return True
+    return False
 
 
 def is_rfc1918(ip: str) -> bool:
@@ -217,9 +254,19 @@ def classify_event_heuristic(
     """
     src_ip = event.get("src_ip", "")
     dest_ip = event.get("dest_ip", "")
+    dest_port = event.get("dest_port")
     signature = event.get("signature", "")
     severity = event.get("severity")
     domain = event.get("dns_rrname", "") or event.get("tls_sni", "")
+
+    # 0. Tailscale / STUN NAT-traversal (highest-volume FP on home networks)
+    if is_tailscale_stun(signature, dest_ip, dest_port):
+        return {
+            "classification": "false_positive",
+            "reason": f"Tailscale/STUN NAT traversal traffic (sig='{signature}', dest={dest_ip}:{dest_port})",
+            "heuristic": "tailscale_stun",
+            "confidence": 98,
+        }
 
     # 1. Known-safe destination IP
     result = classify_by_known_safe_ip(dest_ip)

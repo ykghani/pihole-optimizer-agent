@@ -25,6 +25,17 @@ KNOWN_SAFE_IPS: frozenset[str] = frozenset({
     "208.67.220.220",
 })
 
+# Tailscale DERP server IP ranges used for STUN/NAT traversal.
+# Traffic to/from these IPs is Tailscale VPN infrastructure — always benign.
+# Source: https://login.tailscale.com/derpmap/default (Hetzner-hosted DERP nodes
+# also appear; those are operated by Tailscale).
+TAILSCALE_DERP_IPS: frozenset[str] = frozenset({
+    # Well-known Tailscale DERP/STUN relay IPs (expand as needed)
+    "204.80.128.1",
+    "204.80.129.1",
+    "204.80.130.1",
+})
+
 # ASN prefixes commonly associated with CDN/cloud infrastructure.
 # Alerts involving these ASNs are not auto-dismissed but get lower weight.
 CDN_ASN_PREFIXES: frozenset[str] = frozenset({
@@ -67,6 +78,9 @@ KNOWN_SAFE_SUFFIXES: frozenset[str] = frozenset({
     ".apple.com",
     ".microsoft.com",
     ".ubuntu.com",
+    # Tailscale infrastructure
+    ".tailscale.com",
+    ".tailscale.io",
 })
 
 

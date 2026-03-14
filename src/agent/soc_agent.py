@@ -1044,10 +1044,20 @@ async def run_enrich_cycle() -> None:
         _queue_for_enrichment(findings)
         return
 
-    # Classify in batches of ≤20
+    # Classify in batches of ≤20, re-checking the budget before each batch
+    # so that actual token usage (recorded after each call) gates subsequent calls.
     all_results: list[dict] = []
     for i in range(0, len(findings), 20):
         batch = findings[i:i + 20]
+        # Re-check budget before each batch (uses real token count from prior calls)
+        batch_budget = check_api_budget(estimated_tokens=len(batch) * 200)
+        if not batch_budget["allowed"]:
+            logger.warning(
+                f"API budget exhausted mid-run: {batch_budget['reason']}. "
+                f"Re-queuing {len(findings) - i} remaining findings."
+            )
+            _queue_for_enrichment(findings[i:])
+            break
         results = await _classify_with_claude(batch)
         all_results.extend(results)
 

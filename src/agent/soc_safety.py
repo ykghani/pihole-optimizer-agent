@@ -43,8 +43,14 @@ SAFETY_LIMITS = {
     "lockout_duration_minutes": 30,
 }
 
-# Daily Claude API cost cap (estimated from token counts)
-DAILY_API_COST_CAP_USD = float(os.getenv("SOC_DAILY_API_CAP", "2.0"))
+# Daily Claude API cost cap (estimated from token counts).
+# Reads DAILY_API_COST_CAP first (new name), falls back to SOC_DAILY_API_CAP
+# (legacy name) then the built-in default of $2.
+DAILY_API_COST_CAP_USD = float(
+    os.getenv("DAILY_API_COST_CAP")
+    or os.getenv("SOC_DAILY_API_CAP")
+    or "2.0"
+)
 
 
 # ---------------------------------------------------------------------------
