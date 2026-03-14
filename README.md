@@ -311,13 +311,20 @@ uv run python src/agent/analyzer.py
 
 ### 8. Set Up Automated Scheduling
 
-**PiHole Agent** — runs every 6 hours via cron:
+**PiHole Agent** — runs on a schedule via cron (configurable):
 
 ```bash
 crontab -e
-# Add (adjust paths to your installation):
-0 */6 * * * cd ~/pihole-optimizer-agent && ~/.local/bin/uv run python src/agent/analyzer.py >> ~/pihole-optimizer-agent/logs/cron.log 2>&1
+# Add (adjust paths and schedule to your preference):
+
+# Option 1: Every 2 days at midnight (recommended, set PIHOLE_ANALYSIS_WINDOW_MINUTES=2880 in .env)
+0 0 */2 * * cd ~/pihole-optimizer-agent && ~/.local/bin/uv run python src/agent/analyzer.py >> ~/pihole-optimizer-agent/logs/cron.log 2>&1
+
+# Option 2: Every 6 hours (set PIHOLE_ANALYSIS_WINDOW_MINUTES=360 in .env)
+# 0 */6 * * * cd ~/pihole-optimizer-agent && ~/.local/bin/uv run python src/agent/analyzer.py >> ~/pihole-optimizer-agent/logs/cron.log 2>&1
 ```
+
+**Important:** Set `PIHOLE_ANALYSIS_WINDOW_MINUTES` in your `.env` to match your cron schedule.
 
 **SOC Agent** — two systemd timers working together:
 

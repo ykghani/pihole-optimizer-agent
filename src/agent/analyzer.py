@@ -50,6 +50,10 @@ APPROVAL_SECRET = os.getenv('APPROVAL_SECRET', '')
 APPROVAL_BASE_URL = os.getenv('APPROVAL_BASE_URL', MCP_SERVER_URL)
 PIHOLE_AGENT_HOSTNAME = os.getenv('SOC_AGENT_HOSTNAME', 'pihole-agent')
 
+# Analysis window in minutes (how far back to look in DNS logs)
+# Default: 2880 minutes = 48 hours (2 days)
+ANALYSIS_WINDOW_MINUTES = int(os.getenv('PIHOLE_ANALYSIS_WINDOW_MINUTES', '2880'))
+
 # Safety settings
 AUTO_APPLY_WHITELIST = True   # Auto-apply whitelist for known-good patterns
 AUTO_APPLY_BLACKLIST = False  # Require human approval for blacklisting
@@ -162,9 +166,9 @@ async def observe_node(state: AgentState) -> AgentState:
     logger.info("=== OBSERVE: Collecting DNS data ===")
     
     errors = []
-    
-    # Get recent queries (last 6 hours since we run every 6 hours)
-    recent = await call_mcp_tool("pihole_get_recent_queries", {"minutes": 1440})
+
+    # Get recent queries based on configured analysis window
+    recent = await call_mcp_tool("pihole_get_recent_queries", {"minutes": ANALYSIS_WINDOW_MINUTES})
     if "error" in recent:
         errors.append(f"Failed to get recent queries: {recent['error']}")
         recent = {}
@@ -284,10 +288,19 @@ async def analyze_node(state: AgentState) -> AgentState:
 
     client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
+    # Calculate time period for display (convert minutes to hours or days)
+    hours = ANALYSIS_WINDOW_MINUTES / 60
+    if hours >= 48:
+        time_period = f"Last {int(hours/24)} Days"
+    elif hours >= 24:
+        time_period = f"Last {int(hours/24)} Day"
+    else:
+        time_period = f"Last {int(hours)} Hours"
+
     # Prepare the analysis prompt
     analysis_prompt = f"""You are a network security analyst reviewing DNS query logs from a home PiHole installation.
 
-## Current Data (Last 6 Hours)
+## Current Data ({time_period})
 
 ### Summary Statistics
 - Total queries: {state['recent_queries'].get('total_queries', 'N/A')}

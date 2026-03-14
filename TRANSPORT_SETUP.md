@@ -175,6 +175,9 @@ Once the HTTP service is stable, you can schedule the analyzer:
 # Edit crontab
 crontab -e
 
-# Run every 6 hours
-0 */6 * * * cd /home/pi5/pihole-agent && /home/pi5/.local/bin/uv run python src/agent/analyzer.py >> /home/pi5/pihole-agent/logs/cron.log 2>&1
+# Run every 2 days at midnight (recommended, set PIHOLE_ANALYSIS_WINDOW_MINUTES=2880 in .env)
+0 0 */2 * * cd /home/pi5/pihole-agent && /home/pi5/.local/bin/uv run python src/agent/analyzer.py >> /home/pi5/pihole-agent/logs/cron.log 2>&1
+
+# Alternative: Run every 6 hours (set PIHOLE_ANALYSIS_WINDOW_MINUTES=360 in .env)
+# 0 */6 * * * cd /home/pi5/pihole-agent && /home/pi5/.local/bin/uv run python src/agent/analyzer.py >> /home/pi5/pihole-agent/logs/cron.log 2>&1
 ```
